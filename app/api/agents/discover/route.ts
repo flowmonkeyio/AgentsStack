@@ -1,19 +1,27 @@
+/**
+ * Agent Discovery API
+ *
+ * Endpoint for discovering agents by capability.
+ *
+ * @see /docs/ORCH_DISCOVERY.md
+ */
+
 import { NextRequest, NextResponse } from "next/server";
 import { discoverAgents } from "@/lib/agents";
 
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { capabilities, limit = 5 } = body;
+    const { query, limit = 5 } = body;
 
-    if (!capabilities || !Array.isArray(capabilities)) {
+    if (!query || typeof query !== "string") {
       return NextResponse.json(
-        { error: "capabilities array is required" },
+        { error: "query string is required" },
         { status: 400 }
       );
     }
 
-    const results = await discoverAgents(capabilities, limit);
+    const results = await discoverAgents(query, limit);
 
     return NextResponse.json({ results });
   } catch (error) {

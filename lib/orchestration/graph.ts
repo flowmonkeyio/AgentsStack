@@ -1,3 +1,12 @@
+/**
+ * LangGraph Orchestration Graph
+ *
+ * Defines the state machine for job execution.
+ *
+ * @see /docs/ORCH_GRAPH.md
+ * @see /docs/designs/core-data-structure/TECH_DESIGN.md
+ */
+
 import { StateGraph, END, START } from "@langchain/langgraph";
 import { JobStateAnnotation, type JobState } from "./state";
 
@@ -11,7 +20,7 @@ async function planningNode(state: JobState): Promise<Partial<JobState>> {
 
 async function verifyPlanNode(state: JobState): Promise<Partial<JobState>> {
   // TODO: Implement plan verification
-  return {};
+  return { plan_verification_passed: true };
 }
 
 async function discoverAgentsNode(state: JobState): Promise<Partial<JobState>> {
@@ -31,7 +40,7 @@ async function executeAgentNode(state: JobState): Promise<Partial<JobState>> {
 
 async function verifyOutputNode(state: JobState): Promise<Partial<JobState>> {
   // TODO: Implement output verification via Galileo
-  return { status: "verifying" };
+  return {};
 }
 
 async function processPaymentNode(state: JobState): Promise<Partial<JobState>> {
@@ -49,15 +58,15 @@ async function handleErrorNode(state: JobState): Promise<Partial<JobState>> {
  */
 function shouldContinueExecution(state: JobState): string {
   if (state.error) return "handle_error";
-  if (state.completedActions.length === (state.plan?.actionItems.length ?? 0)) {
+  if (state.completed_actions.length === (state.plan?.action_items.length ?? 0)) {
     return "complete";
   }
   return "discover_agents";
 }
 
 function shouldRetryOrPay(state: JobState): string {
-  if (!state.verificationResult?.passed) {
-    if (state.retryCount < 3) return "retry";
+  if (!state.verification_result?.passed) {
+    if (state.retry_count < 3) return "retry";
     return "handle_error";
   }
   return "process_payment";

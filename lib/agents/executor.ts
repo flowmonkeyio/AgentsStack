@@ -1,4 +1,13 @@
-import type { Agent, WorkItemResult } from "@/types";
+/**
+ * Agent Executor Module
+ *
+ * Handles execution of external agents with x402 payment protocol.
+ *
+ * @see /docs/MODULE_EXTERNAL_AGENTS.md
+ * @see /docs/designs/core-data-structure/TECH_DESIGN.md
+ */
+
+import type { Agent, AgentUsage } from "@/types";
 
 export interface ExecutionParams {
   agent: Agent;
@@ -6,12 +15,31 @@ export interface ExecutionParams {
   timeout?: number;
 }
 
+/**
+ * Output from agent execution.
+ * Matches WorkItem.output schema.
+ */
+export interface AgentOutput {
+  title: string;
+  description: string;
+  content: unknown;
+}
+
 export interface ExecutionResult {
   success: boolean;
-  result?: WorkItemResult;
+  output?: AgentOutput;
+  usage?: AgentUsage;
+  reference_id?: string; // For async agents
+  status_url?: string; // For polling
   error?: string;
 }
 
+/**
+ * Execute an external agent synchronously.
+ *
+ * @param params - Execution parameters
+ * @returns Execution result with output and usage
+ */
 export async function executeAgent(params: ExecutionParams): Promise<ExecutionResult> {
   const { agent, prompt, timeout = 60000 } = params;
 
@@ -19,11 +47,11 @@ export async function executeAgent(params: ExecutionParams): Promise<ExecutionRe
   const timeoutId = setTimeout(() => controller.abort(), timeout);
 
   try {
-    const response = await fetch(agent.endpoint.url, {
-      method: agent.endpoint.method,
+    const response = await fetch(agent.url, {
+      method: "POST",
       headers: {
         "Content-Type": "application/json",
-        ...agent.endpoint.headers,
+        // x402 payment headers will be added by payment integration
       },
       body: JSON.stringify({ prompt }),
       signal: controller.signal,
@@ -39,16 +67,29 @@ export async function executeAgent(params: ExecutionParams): Promise<ExecutionRe
     }
 
     const data = await response.json();
-    const executionTimeMs = Date.now() - Date.now(); // TODO: Track actual time
+
+    // Check for async response (202 Accepted)
+    if (response.status === 202) {
+      return {
+        success: true,
+        reference_id: data.reference_id,
+        status_url: data.status_url,
+      };
+    }
 
     return {
       success: true,
-      result: {
-        output: data.output ?? data,
-        outputType: data.type ?? "text",
-        executionTimeMs,
-        agentMetadata: data.metadata,
+      output: {
+        title: data.title ?? "Agent Output",
+        description: data.description ?? "",
+        content: data.output ?? data.content ?? data,
       },
+      usage: data.usage
+        ? {
+            total_cost: data.usage.total_cost,
+            model_usage: data.usage.model_usage,
+          }
+        : undefined,
     };
   } catch (error) {
     clearTimeout(timeoutId);
@@ -63,6 +104,69 @@ export async function executeAgent(params: ExecutionParams): Promise<ExecutionRe
     return {
       success: false,
       error: error instanceof Error ? error.message : "Unknown execution error",
+    };
+  }
+}
+
+/**
+ * Poll an async agent for status.
+ *
+ * @param status_url - URL to poll for status
+ * @returns Execution result (may still be pending)
+ */
+export async function pollAgentStatus(status_url: string): Promise<ExecutionResult> {
+  try {
+    const response = await fetch(status_url, {
+      method: "GET",
+      headers: {
+        "Content-Type": "application/json",
+      },
+    });
+
+    if (!response.ok) {
+      return {
+        success: false,
+        error: `Status poll returned ${response.status}: ${await response.text()}`,
+      };
+    }
+
+    const data = await response.json();
+
+    // Still processing
+    if (data.status === "pending" || data.status === "processing") {
+      return {
+        success: false,
+        error: "still_processing",
+      };
+    }
+
+    // Completed
+    if (data.status === "completed") {
+      return {
+        success: true,
+        output: {
+          title: data.title ?? "Agent Output",
+          description: data.description ?? "",
+          content: data.output ?? data.content ?? data,
+        },
+        usage: data.usage
+          ? {
+              total_cost: data.usage.total_cost,
+              model_usage: data.usage.model_usage,
+            }
+          : undefined,
+      };
+    }
+
+    // Failed
+    return {
+      success: false,
+      error: data.error ?? "Agent execution failed",
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown poll error",
     };
   }
 }

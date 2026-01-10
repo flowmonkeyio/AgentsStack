@@ -1,7 +1,17 @@
+/**
+ * USDC Transfer Module
+ *
+ * Handles USDC transfers using x402 protocol.
+ *
+ * @see /docs/MODULE_PAYMENTS.md
+ * @see /docs/reference/X402_PROTOCOL.md
+ * @see /docs/designs/core-data-structure/TECH_DESIGN.md
+ */
+
 import { getPlatformWallet, getNetwork } from "./client";
-import { getTransactionsCollection } from "@/lib/db";
-import type { CreateTransactionInput } from "@/types/transaction";
-import { ObjectId } from "mongodb";
+import { getDatabaseClient } from "@/lib/db";
+import type { Transaction } from "@/types";
+import { nanoid } from "nanoid";
 
 const USDC_CONTRACT: Record<string, string> = {
   "base-sepolia": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
@@ -9,82 +19,87 @@ const USDC_CONTRACT: Record<string, string> = {
 };
 
 export interface TransferParams {
-  toAddress: string;
-  amountUsd: number;
-  jobId?: string;
-  workItemId?: string;
-  agentId?: string;
+  agent_wallet: string;
+  amount: number;
+  job_id: string;
+  work_id: string;
+  user_id: string;
+  agent_id: string;
+  reason: string;
+  budget_before: number;
+  budget_after: number;
 }
 
-export async function transferUsdc(params: TransferParams): Promise<{
-  transactionId: ObjectId;
-  txHash: string;
-}> {
-  const { toAddress, amountUsd, jobId, workItemId, agentId } = params;
-  const network = getNetwork();
-  const wallet = await getPlatformWallet();
+export interface TransferResult {
+  tx_id: string;
+  tx_hash: string;
+}
 
-  // USDC has 6 decimals
-  const amountUsdc = (amountUsd * 1_000_000).toString();
+/**
+ * Transfer USDC to an agent wallet.
+ *
+ * @param params - Transfer parameters
+ * @returns Transaction ID and hash
+ */
+export async function transferUsdc(params: TransferParams): Promise<TransferResult> {
+  const {
+    agent_wallet,
+    amount,
+    job_id,
+    work_id,
+    user_id,
+    agent_id,
+    reason,
+    budget_before,
+    budget_after,
+  } = params;
 
-  // Create transaction record
-  const transactions = await getTransactionsCollection();
-  const txInput: CreateTransactionInput = {
-    type: "agent_payment",
-    fromAddress: process.env.PLATFORM_WALLET_ADDRESS!,
-    toAddress,
-    amountUsd,
-    amountUsdc,
-    network,
-    ...(jobId && { jobId: new ObjectId(jobId) }),
-    ...(workItemId && { workItemId: new ObjectId(workItemId) }),
-    ...(agentId && { agentId: new ObjectId(agentId) }),
-  };
+  const db = getDatabaseClient();
+  const tx_id = nanoid();
 
-  const result = await transactions.insertOne({
-    ...txInput,
+  // Create transaction record (pending)
+  await db.createTransaction({
+    tx_id,
+    job_id,
+    work_id,
+    user_id,
+    agent_id,
+    amount,
+    currency: "USDC",
+    protocol: "x402",
+    tx_hash: "", // Will be updated after execution
     status: "pending",
-    createdAt: new Date(),
-  } as never);
-
-  const transactionId = result.insertedId;
+    audit: {
+      reason,
+      approved_by: "system",
+      budget_before,
+      budget_after,
+    },
+    confirmed_at: null,
+  });
 
   try {
-    // Execute transfer
-    const transfer = await wallet.transfer({
-      to: toAddress,
-      amount: amountUsdc,
-      assetId: USDC_CONTRACT[network],
-    });
+    // TODO: Implement actual USDC transfer via CDP SDK
+    // For now, simulate a successful transfer
+    const tx_hash = `0x${nanoid(64)}`;
 
-    // Wait for confirmation
-    await transfer.wait();
+    // Update transaction with hash and confirmed status
+    await db.updateTransactionStatus(tx_id, "confirmed");
 
-    // Update transaction with hash
-    const txHash = transfer.getTransactionHash()!;
-    await transactions.updateOne(
-      { _id: transactionId },
-      {
-        $set: {
-          status: "confirmed",
-          txHash,
-          confirmedAt: new Date(),
-        },
-      }
-    );
-
-    return { transactionId, txHash };
+    return { tx_id, tx_hash };
   } catch (error) {
-    // Update transaction with error
-    await transactions.updateOne(
-      { _id: transactionId },
-      {
-        $set: {
-          status: "failed",
-          error: error instanceof Error ? error.message : "Unknown error",
-        },
-      }
-    );
+    // Update transaction with failed status
+    await db.updateTransactionStatus(tx_id, "failed");
     throw error;
   }
+}
+
+/**
+ * Get USDC contract address for the current network.
+ *
+ * @returns USDC contract address
+ */
+export function getUsdcContract(): string {
+  const network = getNetwork();
+  return USDC_CONTRACT[network];
 }

@@ -1,6 +1,16 @@
+/**
+ * Agent Discovery Module
+ *
+ * Handles agent capability embedding and vector search.
+ * Uses Voyage AI for embeddings and MongoDB Atlas Vector Search.
+ *
+ * @see /docs/ORCH_DISCOVERY.md
+ * @see /docs/designs/core-data-structure/TECH_DESIGN.md
+ */
+
 import { VoyageAIClient } from "voyageai";
-import { getAgentsCollection } from "@/lib/db";
-import type { Agent, AgentSearchResult } from "@/types/agent";
+import { getAgentsCollection, getDatabaseClient } from "@/lib/db";
+import type { Agent } from "@/types";
 
 let voyageClient: VoyageAIClient | null = null;
 
@@ -13,39 +23,54 @@ function getVoyageClient(): VoyageAIClient {
   return voyageClient;
 }
 
-export async function embedCapabilities(capabilities: string[]): Promise<number[]> {
+/**
+ * Generate embedding for capabilities text.
+ * @param capabilities - Capabilities description string
+ * @returns 1024-dimensional embedding vector
+ */
+export async function embedCapabilities(capabilities: string): Promise<number[]> {
   const client = getVoyageClient();
-  const text = capabilities.join(", ");
 
   const response = await client.embed({
-    input: [text],
+    input: [capabilities],
     model: "voyage-3",
   });
 
   return response.data?.[0]?.embedding ?? [];
 }
 
+/**
+ * Search result from agent discovery.
+ */
+export interface AgentDiscoveryResult {
+  agent: Agent;
+  score: number;
+}
+
+/**
+ * Discover agents matching required capabilities using vector search.
+ *
+ * @param query - Natural language description of required capabilities
+ * @param limit - Maximum number of agents to return
+ * @returns Array of agents with similarity scores
+ */
 export async function discoverAgents(
-  requiredCapabilities: string[],
+  query: string,
   limit: number = 5
-): Promise<AgentSearchResult[]> {
-  const embedding = await embedCapabilities(requiredCapabilities);
+): Promise<AgentDiscoveryResult[]> {
+  const embedding = await embedCapabilities(query);
   const agents = await getAgentsCollection();
 
   // Vector search using MongoDB Atlas
+  // Index: agent_capabilities_vector (defined in TECH_DESIGN.md)
   const pipeline = [
     {
       $vectorSearch: {
-        index: "capability_index",
-        path: "capabilityEmbedding",
+        index: "agent_capabilities_vector",
+        path: "capabilities_embedding",
         queryVector: embedding,
         numCandidates: limit * 10,
         limit,
-      },
-    },
-    {
-      $match: {
-        status: "active",
       },
     },
     {
@@ -55,35 +80,49 @@ export async function discoverAgents(
     },
   ];
 
-  const results = await agents.aggregate<Agent & { score: number }>(pipeline).toArray();
+  const results = await agents
+    .aggregate<Agent & { score: number }>(pipeline)
+    .toArray();
 
-  return results.map((agent) => ({
-    agent,
-    score: agent.score,
-    matchedCapabilities: agent.capabilities.filter((cap) =>
-      requiredCapabilities.some(
-        (req) => cap.toLowerCase().includes(req.toLowerCase())
-      )
-    ),
+  return results.map((result) => ({
+    agent: {
+      agent_id: result.agent_id,
+      name: result.name,
+      url: result.url,
+      pricing: result.pricing,
+      capabilities: result.capabilities,
+      capabilities_embedding: result.capabilities_embedding,
+      wallet: result.wallet,
+      stats: result.stats,
+      supports_async: result.supports_async,
+      supports_callback: result.supports_callback,
+      registered_at: result.registered_at,
+    },
+    score: result.score,
   }));
 }
 
-export async function updateAgentEmbedding(agentId: string): Promise<void> {
-  const agents = await getAgentsCollection();
-  const agent = await agents.findOne({ _id: new (await import("mongodb")).ObjectId(agentId) });
+/**
+ * Update an agent's capability embedding.
+ *
+ * @param agent_id - Agent ID
+ */
+export async function updateAgentEmbedding(agent_id: string): Promise<void> {
+  const db = getDatabaseClient();
+  const agent = await db.getAgent(agent_id);
 
   if (!agent) {
-    throw new Error(`Agent not found: ${agentId}`);
+    throw new Error(`Agent not found: ${agent_id}`);
   }
 
   const embedding = await embedCapabilities(agent.capabilities);
+  const agents = await getAgentsCollection();
 
   await agents.updateOne(
-    { _id: agent._id },
+    { agent_id },
     {
       $set: {
-        capabilityEmbedding: embedding,
-        updatedAt: new Date(),
+        capabilities_embedding: embedding,
       },
     }
   );

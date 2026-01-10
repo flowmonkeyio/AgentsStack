@@ -1,2 +1,2 @@
-export { getGalileoLogger, verifyOutput, logTrace } from "./client";
-export type { VerificationInput } from "./client";
+export { verifyOutput, logTrace } from "./client";
+export type { VerificationInput, VerificationResult } from "./client";

@@ -1,3 +1,9 @@
+/**
+ * Clerk Authentication Middleware
+ *
+ * @see /docs/reference/CLERK_AUTH.md
+ */
+
 import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
 
 const isPublicRoute = createRouteMatcher([
@@ -6,11 +12,14 @@ const isPublicRoute = createRouteMatcher([
   "/sign-up(.*)",
   "/api/agents",
   "/api/agents/discover",
+  "/api/webhooks(.*)", // Webhook routes for external agents
 ]);
 
 export default clerkMiddleware(async (auth, request) => {
   if (!isPublicRoute(request)) {
-    await auth.protect();
+    // Clerk v6: auth.protect() returns a promise
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (auth as any).protect();
   }
 });
 

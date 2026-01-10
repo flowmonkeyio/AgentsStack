@@ -1,76 +1,86 @@
-import { observe, createLogger, ObserveWorkflows } from "@rungalileo/observe";
-import type { WorkItemVerification, VerificationMetrics } from "@/types/work-item";
+/**
+ * Galileo Verification Client
+ *
+ * Placeholder - Galileo SDK integration to be implemented.
+ * For now, provides stub functions for verification.
+ *
+ * @see /docs/MODULE_GALILEO.md
+ * @see /docs/reference/GALILEO_AI.md
+ */
 
-let galileoLogger: ReturnType<typeof createLogger> | null = null;
+import type { CriteriaResult } from "@/types";
 
-export function getGalileoLogger() {
-  if (!galileoLogger) {
-    galileoLogger = createLogger({
-      apiKey: process.env.GALILEO_API_KEY!,
-      projectId: process.env.GALILEO_PROJECT_ID!,
-    });
-  }
-  return galileoLogger;
+/**
+ * Verification result matching WorkItem.verification schema.
+ */
+export interface VerificationResult {
+  score: number;
+  reasoning: string;
+  criteria_results: CriteriaResult[];
+  issues: string[];
+  verified_at: Date;
 }
 
 export interface VerificationInput {
   prompt: string;
   output: unknown;
-  expectedType: string;
-  constraints?: string[];
+  criteria: string[];
 }
 
-export async function verifyOutput(input: VerificationInput): Promise<WorkItemVerification> {
-  const { prompt, output, expectedType, constraints } = input;
+/**
+ * Verify agent output against criteria.
+ *
+ * TODO: Implement Galileo SDK integration
+ *
+ * @param input - Verification input
+ * @returns Verification result
+ */
+export async function verifyOutput(input: VerificationInput): Promise<VerificationResult> {
+  const { prompt, output, criteria } = input;
 
-  // Use Galileo observe for verification
-  const result = await observe(
-    {
-      projectId: process.env.GALILEO_PROJECT_ID!,
-      workflow: ObserveWorkflows.evaluate,
-    },
-    async () => {
-      // Placeholder verification logic
-      // In production, this would call Galileo's evaluation APIs
-      const outputStr = typeof output === "string" ? output : JSON.stringify(output);
+  // Placeholder verification logic
+  // In production, this would call Galileo's evaluation APIs
+  const outputStr = typeof output === "string" ? output : JSON.stringify(output);
 
-      const relevance = outputStr.length > 10 ? 0.8 : 0.3;
-      const quality = outputStr.length > 50 ? 0.85 : 0.5;
-      const completeness = 0.75;
-      const safety = 1.0;
+  // Simulate verification
+  const hasContent = outputStr.length > 10;
+  const score = hasContent ? 0.85 : 0.4;
 
-      const avgScore = (relevance + quality + completeness + safety) / 4;
+  const criteria_results: CriteriaResult[] = criteria.map((criterion) => ({
+    criterion,
+    passed: score >= 0.7,
+  }));
 
-      return {
-        passed: avgScore >= 0.7,
-        score: avgScore,
-        metrics: { relevance, quality, completeness, safety },
-      };
-    }
-  );
+  const issues: string[] = [];
+  if (!hasContent) {
+    issues.push("Output is too short");
+  }
 
   return {
-    passed: result.passed,
-    score: result.score,
-    feedback: result.passed
+    score,
+    reasoning: score >= 0.7
       ? "Output meets quality standards"
-      : "Output needs improvement",
-    metrics: result.metrics as VerificationMetrics,
-    verifiedAt: new Date(),
+      : "Output needs improvement - see issues",
+    criteria_results,
+    issues,
+    verified_at: new Date(),
   };
 }
 
+/**
+ * Log a trace to Galileo for observability.
+ *
+ * TODO: Implement Galileo SDK integration
+ *
+ * @param workflowName - Name of the workflow
+ * @param input - Workflow input
+ * @param output - Workflow output
+ */
 export async function logTrace(
   workflowName: string,
   input: Record<string, unknown>,
   output: Record<string, unknown>
 ): Promise<void> {
-  const logger = getGalileoLogger();
-
-  await logger.log({
-    workflow: workflowName,
-    input,
-    output,
-    timestamp: new Date().toISOString(),
-  });
+  // Placeholder - will be implemented with Galileo SDK
+  console.log(`[Galileo Trace] ${workflowName}`, { input, output });
 }
