@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { AgentCard, AgentData, AgentRegistrationForm, AgentFormData } from "@/components/agent";
+import { Breadcrumb } from "@/components/layout";
 
 /**
  * Stats for the agents overview
@@ -39,7 +40,7 @@ export default function AgentsPage() {
     pendingReview: agents.filter((a) => a.status === "pending_review").length,
     avgScore:
       agents.length > 0
-        ? agents.reduce((sum, a) => sum + (a.metrics.averageScore || 0), 0) /
+        ? agents.reduce((sum, a) => sum + (a.metrics?.averageScore || 0), 0) /
           agents.length
         : 0,
   };
@@ -110,6 +111,9 @@ export default function AgentsPage() {
 
   return (
     <div className="space-y-8">
+      {/* Breadcrumb */}
+      <Breadcrumb items={[{ label: "Agents" }]} />
+
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
@@ -142,60 +146,60 @@ export default function AgentsPage() {
       </div>
 
       {/* Stats Grid - matching dashboard style */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <div className="p-5 rounded-xl bg-background-card border border-border group hover:border-primary/30 transition-colors">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="p-5 rounded-2xl bg-[var(--background-card)] border border-[var(--border)] shadow-[var(--shadow-sm)] group hover:shadow-[var(--shadow-md)] hover:border-[var(--border-hover)] transition-all duration-200">
           <div className="flex items-center gap-3 mb-3">
-            <div className="w-10 h-10 rounded-lg bg-info-muted flex items-center justify-center">
-              <svg className="w-5 h-5 text-info" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <div className="w-10 h-10 rounded-xl bg-[var(--info-muted)] flex items-center justify-center">
+              <svg className="w-5 h-5 text-[var(--info)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z" />
               </svg>
             </div>
-            <span className="text-sm text-foreground-muted">Total Agents</span>
+            <span className="text-sm text-[var(--foreground-muted)] font-medium">Total Agents</span>
           </div>
-          <div className="text-3xl font-heading font-bold text-foreground">{stats.total}</div>
+          <div className="text-3xl font-heading font-bold text-[var(--foreground)]">{stats.total}</div>
         </div>
 
-        <div className="p-5 rounded-xl bg-background-card border border-border group hover:border-primary/30 transition-colors">
+        <div className="p-5 rounded-2xl bg-[var(--background-card)] border border-[var(--border)] shadow-[var(--shadow-sm)] group hover:shadow-[var(--shadow-md)] hover:border-[var(--border-hover)] transition-all duration-200">
           <div className="flex items-center gap-3 mb-3">
-            <div className="w-10 h-10 rounded-lg bg-success-muted flex items-center justify-center">
-              <svg className="w-5 h-5 text-success" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <div className="w-10 h-10 rounded-xl bg-[var(--success-muted)] flex items-center justify-center">
+              <svg className="w-5 h-5 text-[var(--success)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
               </svg>
             </div>
-            <span className="text-sm text-foreground-muted">Active</span>
+            <span className="text-sm text-[var(--foreground-muted)] font-medium">Active</span>
           </div>
-          <div className="text-3xl font-heading font-bold text-success">{stats.active}</div>
+          <div className="text-3xl font-heading font-bold text-[var(--success)]">{stats.active}</div>
         </div>
 
-        <div className="p-5 rounded-xl bg-background-card border border-border group hover:border-primary/30 transition-colors">
+        <div className="p-5 rounded-2xl bg-[var(--background-card)] border border-[var(--border)] shadow-[var(--shadow-sm)] group hover:shadow-[var(--shadow-md)] hover:border-[var(--border-hover)] transition-all duration-200">
           <div className="flex items-center gap-3 mb-3">
-            <div className="w-10 h-10 rounded-lg bg-warning-muted flex items-center justify-center">
-              <svg className="w-5 h-5 text-warning" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <div className="w-10 h-10 rounded-xl bg-[var(--warning-muted)] flex items-center justify-center">
+              <svg className="w-5 h-5 text-[var(--warning)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
               </svg>
             </div>
-            <span className="text-sm text-foreground-muted">Pending Review</span>
+            <span className="text-sm text-[var(--foreground-muted)] font-medium">Pending</span>
           </div>
-          <div className="text-3xl font-heading font-bold text-warning">{stats.pendingReview}</div>
+          <div className="text-3xl font-heading font-bold text-[var(--warning)]">{stats.pendingReview}</div>
         </div>
 
-        <div className="p-5 rounded-xl bg-background-card border border-border group hover:border-primary/30 transition-colors">
+        <div className="p-5 rounded-2xl bg-[var(--background-card)] border border-[var(--border)] shadow-[var(--shadow-sm)] group hover:shadow-[var(--shadow-md)] hover:border-[var(--border-hover)] transition-all duration-200">
           <div className="flex items-center gap-3 mb-3">
-            <div className="w-10 h-10 rounded-lg bg-primary-muted flex items-center justify-center">
-              <svg className="w-5 h-5 text-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <div className="w-10 h-10 rounded-xl bg-[var(--primary-muted)] flex items-center justify-center">
+              <svg className="w-5 h-5 text-[var(--primary)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M11.48 3.499a.562.562 0 011.04 0l2.125 5.111a.563.563 0 00.475.345l5.518.442c.499.04.701.663.321.988l-4.204 3.602a.563.563 0 00-.182.557l1.285 5.385a.562.562 0 01-.84.61l-4.725-2.885a.563.563 0 00-.586 0L6.982 20.54a.562.562 0 01-.84-.61l1.285-5.386a.562.562 0 00-.182-.557l-4.204-3.602a.563.563 0 01.321-.988l5.518-.442a.563.563 0 00.475-.345L11.48 3.5z" />
               </svg>
             </div>
-            <span className="text-sm text-foreground-muted">Avg Score</span>
+            <span className="text-sm text-[var(--foreground-muted)] font-medium">Avg Score</span>
           </div>
-          <div className="text-3xl font-heading font-bold text-primary">
+          <div className="text-3xl font-heading font-bold text-[var(--primary)]">
             {stats.avgScore > 0 ? stats.avgScore.toFixed(1) : "--"}
           </div>
         </div>
       </div>
 
       {/* Filter Tabs */}
-      <div className="flex items-center gap-1 border-b border-border">
+      <div className="flex items-center gap-2 p-1 bg-[var(--background-subtle)] rounded-xl w-fit">
         {[
           { value: "all", label: "All" },
           { value: "active", label: "Active" },
@@ -205,12 +209,11 @@ export default function AgentsPage() {
             key={tab.value}
             onClick={() => setStatusFilter(tab.value)}
             className={`
-              px-4 py-2.5 text-sm font-medium transition-colors
-              border-b-2 -mb-px
+              px-4 py-2 text-sm font-semibold rounded-lg transition-all duration-200
               ${
                 statusFilter === tab.value
-                  ? "border-primary text-primary"
-                  : "border-transparent text-foreground-muted hover:text-foreground"
+                  ? "bg-[var(--background-card)] text-[var(--primary)] shadow-[var(--shadow-sm)]"
+                  : "text-[var(--foreground-muted)] hover:text-[var(--foreground)] hover:bg-[var(--background-card)]/50"
               }
             `}
           >
@@ -274,11 +277,11 @@ export default function AgentsPage() {
           </div>
         </div>
       ) : filteredAgents.length === 0 ? (
-        <div className="rounded-2xl bg-background-card border border-border overflow-hidden">
-          <div className="p-12 text-center">
-            <div className="w-16 h-16 rounded-2xl bg-primary-muted flex items-center justify-center mx-auto mb-4">
+        <div className="rounded-2xl bg-[var(--background-card)] border border-[var(--border)] shadow-[var(--shadow)] overflow-hidden">
+          <div className="p-16 text-center">
+            <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-[var(--primary-muted)] to-[var(--secondary-muted)] flex items-center justify-center mx-auto mb-6">
               <svg
-                className="w-8 h-8 text-primary"
+                className="w-10 h-10 text-[var(--primary)]"
                 fill="none"
                 stroke="currentColor"
                 viewBox="0 0 24 24"
@@ -291,11 +294,11 @@ export default function AgentsPage() {
                 />
               </svg>
             </div>
-            <h3 className="font-heading text-lg font-semibold text-foreground mb-2">No agents found</h3>
-            <p className="text-foreground-muted mb-6 max-w-sm mx-auto">
+            <h3 className="font-heading text-xl font-bold text-[var(--foreground)] mb-3">No agents found</h3>
+            <p className="text-[var(--foreground-muted)] mb-8 max-w-sm mx-auto leading-relaxed">
               {statusFilter === "all"
-                ? "Register your first agent to get started."
-                : "No agents with this status."}
+                ? "Register your first agent to get started with the marketplace."
+                : "No agents with this status at the moment."}
             </p>
             {statusFilter === "all" && (
               <button
@@ -311,9 +314,9 @@ export default function AgentsPage() {
           </div>
         </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
           {filteredAgents.map((agent) => (
-            <AgentCard key={agent._id} agent={agent} />
+            <AgentCard key={agent._id} agent={agent} onApprove={fetchAgents} />
           ))}
         </div>
       )}

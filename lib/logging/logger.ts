@@ -53,9 +53,10 @@ export class Logger {
     }
   }
 
-  warn(ctx: RequestContext, message: string): void {
+  warn(ctx: RequestContext, message: string, error?: Error): void {
     if (this.shouldLog("warn")) {
-      console.warn(this.format(ctx, "warn", message));
+      const errorPart = error ? ` error="${error.message}"` : "";
+      console.warn(this.format(ctx, "warn", message + errorPart));
     }
   }
 

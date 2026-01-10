@@ -1,33 +1,31 @@
 /**
  * x402 Protocol Integration Module
  *
- * Handles x402 payment execution and confirmation.
- * Uses the x402 protocol for machine-to-machine payments on Base network.
- *
- * NOTE: We use x402 for direct transfers AFTER verification (not the HTTP 402 flow).
+ * Handles payment execution and confirmation using CDP SDK.
+ * Uses the CDP SDK for USDC transfers on Base network.
  *
  * @see /docs/designs/payments/TECH_DESIGN.md
  */
 
 import { RequestContext, createLogger } from "@/lib/logging";
+import { CdpClient, parseUnits } from "@coinbase/cdp-sdk";
+import { createPublicClient, http } from "viem";
+import { baseSepolia, base } from "viem/chains";
 import type {
   PaymentRequest,
   PaymentResponse,
   X402Transfer,
   X402TransferResult,
 } from "./types";
-import { isValidAddress, getBalance } from "./wallet";
+import { isValidAddress, getBalance, type Network } from "./wallet";
 import { isRetryableError } from "./retry";
 
 const logger = createLogger("payments");
 
-// TODO: Import from @coinbase/x402 when available
-// import { x402 } from '@coinbase/x402';
-
 /**
- * Default confirmation timeout in milliseconds (1 minute).
+ * Default confirmation timeout in milliseconds (2 minutes).
  */
-const DEFAULT_CONFIRMATION_TIMEOUT = 60000;
+const DEFAULT_CONFIRMATION_TIMEOUT = 120000;
 
 /**
  * Default number of confirmations to wait for.
@@ -45,10 +43,81 @@ interface ConfirmationOptions {
   confirmations: number;
 }
 
+// =============================================================================
+// CDP CLIENT SINGLETON
+// =============================================================================
+
+let cdpClient: CdpClient | null = null;
+
 /**
- * Execute an x402 transfer.
- *
- * TODO: Implement actual x402 SDK integration
+ * Get or create CDP client singleton.
+ */
+function getCdpClient(ctx: RequestContext): CdpClient {
+  if (!cdpClient) {
+    const apiKeyId = process.env.CDP_API_KEY_ID;
+    const apiKeySecret = process.env.CDP_API_KEY_SECRET;
+    const walletSecret = process.env.CDP_WALLET_SECRET;
+
+    if (!apiKeyId || !apiKeySecret || !walletSecret) {
+      logger.error(ctx, `operation=get_cdp_client status=failed reason=missing_credentials`);
+      throw new Error("CDP credentials not configured: CDP_API_KEY_ID, CDP_API_KEY_SECRET, CDP_WALLET_SECRET required");
+    }
+
+    cdpClient = new CdpClient({
+      apiKeyId,
+      apiKeySecret,
+      walletSecret,
+    });
+
+    logger.info(ctx, `operation=get_cdp_client status=initialized`);
+  }
+  return cdpClient;
+}
+
+/**
+ * Get viem public client for transaction confirmation.
+ */
+function getPublicClient(network: Network) {
+  const chain = network === "base-mainnet" ? base : baseSepolia;
+  return createPublicClient({
+    chain,
+    transport: http(),
+  });
+}
+
+/**
+ * CDP SDK network type (different from our wallet Network type).
+ */
+type CdpNetwork = "base" | "base-sepolia" | "ethereum" | "ethereum-sepolia";
+
+/**
+ * Get network from environment.
+ */
+function getNetwork(): Network {
+  const network = process.env.CDP_NETWORK || "base-sepolia";
+  if (network !== "base-sepolia" && network !== "base-mainnet") {
+    throw new Error(`Invalid network: ${network}`);
+  }
+  return network;
+}
+
+/**
+ * Map our network to CDP SDK network name.
+ */
+function getCdpNetwork(): CdpNetwork {
+  const network = process.env.CDP_NETWORK || "base-sepolia";
+  // CDP SDK uses "base" instead of "base-mainnet"
+  if (network === "base-mainnet") {
+    return "base";
+  }
+  if (network === "base-sepolia") {
+    return "base-sepolia";
+  }
+  throw new Error(`Unsupported network for CDP: ${network}`);
+}
+
+/**
+ * Execute a USDC transfer using CDP SDK.
  *
  * @param ctx - Request context for tracing
  * @param transfer - Transfer details
@@ -60,39 +129,51 @@ async function x402Transfer(
 ): Promise<X402TransferResult> {
   logger.info(
     ctx,
-    `operation=x402_transfer from=${transfer.from} to=${transfer.to} amount=${transfer.amount} currency=${transfer.currency} status=started`
+    `operation=cdp_transfer from=${transfer.from} to=${transfer.to} amount=${transfer.amount} currency=${transfer.currency} status=started`
   );
 
-  // TODO: Implement actual x402 SDK call
-  // const result = await x402.transfer({
-  //   from: transfer.from,
-  //   to: transfer.to,
-  //   amount: transfer.amount,
-  //   currency: transfer.currency,
-  //   memo: transfer.memo
-  // });
-  // return { hash: result.hash };
+  const cdp = getCdpClient(ctx);
+  const cdpNetwork = getCdpNetwork();
 
-  // Placeholder: Return simulated transaction hash for development
-  logger.warn(
-    ctx,
-    `operation=x402_transfer amount=${transfer.amount} from=${transfer.from} to=${transfer.to} status=placeholder`
-  );
+  try {
+    // Get or create the platform account (sender)
+    // The platform wallet is managed by CDP and identified by name
+    const platformWalletId = process.env.PLATFORM_WALLET_ID || "agentstack-platform";
+    const sender = await cdp.evm.getOrCreateAccount({
+      name: platformWalletId,
+    });
 
-  // Simulate network delay
-  await new Promise((resolve) => setTimeout(resolve, 100));
+    logger.info(ctx, `operation=cdp_transfer sender_address=${sender.address} platform_wallet=${platformWalletId} network=${cdpNetwork}`);
 
-  // Generate a simulated transaction hash
-  const hash = `0x${generateSimulatedHash()}`;
+    // Verify sender address matches expected (if configured)
+    const expectedAddress = process.env.PLATFORM_WALLET_ADDRESS;
+    if (expectedAddress && sender.address.toLowerCase() !== expectedAddress.toLowerCase()) {
+      logger.warn(ctx, `operation=cdp_transfer status=address_mismatch expected=${expectedAddress} actual=${sender.address}`);
+    }
 
-  logger.info(ctx, `operation=x402_transfer tx_hash=${hash} status=completed`);
-  return { hash };
+    // Execute the transfer
+    // Amount is in USDC (6 decimals)
+    const amountInMicroUnits = parseUnits(transfer.amount.toString(), 6);
+
+    const { transactionHash } = await sender.transfer({
+      to: transfer.to as `0x${string}`,
+      amount: amountInMicroUnits,
+      token: "usdc",
+      network: cdpNetwork,
+    });
+
+    logger.info(ctx, `operation=cdp_transfer tx_hash=${transactionHash} amount=${transfer.amount} status=submitted`);
+
+    return { hash: transactionHash };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.error(ctx, `operation=cdp_transfer status=failed error="${message}"`, error instanceof Error ? error : undefined);
+    throw error;
+  }
 }
 
 /**
- * Wait for transaction confirmation on-chain.
- *
- * TODO: Implement actual confirmation checking
+ * Wait for transaction confirmation on-chain using viem.
  *
  * @param ctx - Request context for tracing
  * @param txHash - Transaction hash to check
@@ -104,38 +185,47 @@ async function waitForConfirmation(
   txHash: string,
   options: ConfirmationOptions
 ): Promise<boolean> {
-  const { timeout } = options;
-  const startTime = Date.now();
+  const { timeout, confirmations } = options;
 
   logger.info(
     ctx,
-    `operation=wait_for_confirmation tx_hash=${txHash} timeout=${timeout} confirmations=${options.confirmations} status=started`
+    `operation=wait_for_confirmation tx_hash=${txHash} timeout=${timeout} confirmations=${confirmations} status=started`
   );
 
-  // TODO: Implement actual confirmation polling
-  // while (Date.now() - startTime < timeout) {
-  //   const status = await getTransactionStatus(txHash);
-  //   if (status.confirmations >= options.confirmations) {
-  //     return true;
-  //   }
-  //   await sleep(1000);
-  // }
-  // return false;
+  const network = getNetwork();
+  const publicClient = getPublicClient(network);
 
-  // Placeholder: Simulate confirmation delay
-  logger.warn(ctx, `operation=wait_for_confirmation tx_hash=${txHash} status=placeholder`);
+  try {
+    // Wait for transaction receipt with timeout
+    const receipt = await Promise.race([
+      publicClient.waitForTransactionReceipt({
+        hash: txHash as `0x${string}`,
+        confirmations,
+      }),
+      new Promise<null>((_, reject) =>
+        setTimeout(() => reject(new Error("Confirmation timeout")), timeout)
+      ),
+    ]);
 
-  // Simulate a short wait (10% of timeout for development)
-  const waitTime = Math.min(timeout * 0.1, 500);
-  await new Promise((resolve) => setTimeout(resolve, waitTime));
+    if (receipt && receipt.status === "success") {
+      logger.info(
+        ctx,
+        `operation=wait_for_confirmation tx_hash=${txHash} block=${receipt.blockNumber} status=confirmed`
+      );
+      return true;
+    }
 
-  // Check if we're within timeout
-  const confirmed = Date.now() - startTime < timeout;
-  logger.info(
-    ctx,
-    `operation=wait_for_confirmation tx_hash=${txHash} confirmed=${confirmed} status=completed`
-  );
-  return confirmed;
+    if (receipt && receipt.status === "reverted") {
+      logger.error(ctx, `operation=wait_for_confirmation tx_hash=${txHash} status=reverted`);
+      return false;
+    }
+
+    return false;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.error(ctx, `operation=wait_for_confirmation tx_hash=${txHash} status=failed error="${message}"`);
+    return false;
+  }
 }
 
 /**
@@ -234,17 +324,3 @@ export async function executePayment(
   }
 }
 
-/**
- * Generate a simulated transaction hash for development.
- * In production, this comes from the actual blockchain transaction.
- *
- * @returns 64-character hex string
- */
-function generateSimulatedHash(): string {
-  const chars = "0123456789abcdef";
-  let result = "";
-  for (let i = 0; i < 64; i++) {
-    result += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return result;
-}

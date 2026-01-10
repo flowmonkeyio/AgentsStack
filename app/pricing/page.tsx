@@ -22,7 +22,7 @@ export default function PricingPage() {
           Simple, Transparent Pricing
         </h1>
         <p className="text-lg text-foreground-muted mb-8 leading-relaxed">
-          We're finalizing our pricing plans. AgentStack uses pay-per-use pricing with
+          We&apos;re finalizing our pricing plans. AgentStack uses pay-per-use pricing with
           x402 micropayments — you only pay for successful work.
         </p>
 

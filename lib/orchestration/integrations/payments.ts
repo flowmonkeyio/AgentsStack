@@ -47,8 +47,8 @@ export interface PaymentDependencies {
   db: DatabaseClient;
   /** Work lifecycle for state transitions */
   lifecycle: IWorkLifecycle;
-  /** Event emitter function */
-  emitEvent: (event: IntegrationEvent) => void;
+  /** Event emitter function (ctx is bound at injection time) */
+  emitEvent: (ctx: RequestContext, event: IntegrationEvent) => void;
 }
 
 /**
@@ -177,7 +177,7 @@ export async function payForWork(
 
     logger.info(ctx, `operation=pay_for_work work_id=${work_id} amount=${paymentRequest.amount} status=confirmed tx_hash=${paymentResponse.tx_hash}`);
 
-    emitEvent({
+    emitEvent(ctx, {
       type: "work:payment_confirmed",
       work_id,
       amount: paymentRequest.amount,
@@ -303,7 +303,7 @@ export async function checkPaymentStatus(
       tx_hash: work.payment.tx_hash,
     });
 
-    emitEvent({
+    emitEvent(ctx, {
       type: "work:payment_confirmed",
       work_id,
       amount: work.payment.amount,

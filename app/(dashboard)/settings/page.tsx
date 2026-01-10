@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { Breadcrumb } from "@/components/layout";
 
 export default function SettingsPage() {
   const [notifications, setNotifications] = useState(true);
@@ -8,6 +9,9 @@ export default function SettingsPage() {
 
   return (
     <div className="space-y-8">
+      {/* Breadcrumb */}
+      <Breadcrumb items={[{ label: "Settings" }]} />
+
       {/* Header */}
       <div>
         <h1 className="font-heading text-3xl font-bold text-foreground">Settings</h1>

@@ -301,7 +301,7 @@ export function buildReassignmentCriteria(
  * @param job_id - The job ID
  * @param plan_id - The plan ID
  * @param action_item - The continuation action item
- * @param emitEvent - Function to emit events
+ * @param emitEvent - Function to emit events (ctx is bound at injection time)
  * @returns The created work item
  */
 export async function createContinuationWorkItem(
@@ -310,7 +310,7 @@ export async function createContinuationWorkItem(
   job_id: string,
   plan_id: string,
   action_item: ContinuationActionItem,
-  emitEvent: (event: WorkLifecycleEvent) => void
+  emitEvent: (ctx: RequestContext, event: WorkLifecycleEvent) => void
 ): Promise<WorkItem> {
   const work_id = `work_${Date.now()}_${action_item.id}`;
 
@@ -376,7 +376,7 @@ export async function createContinuationWorkItem(
   });
 
   // Emit creation event
-  emitEvent({
+  emitEvent(ctx, {
     type: "work:created",
     work_id,
     action_item_id: action_item.id,

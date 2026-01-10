@@ -12,15 +12,17 @@ config({ path: ".env.local" });
 // Now import the rest (dynamic import to ensure env is loaded first)
 async function main() {
   const { getDatabaseClient } = await import("../lib/db");
+  const { createContext } = await import("../lib/logging");
   const { nanoid } = await import("nanoid");
 
   console.log("Testing Core Data Structure...\n");
 
   const db = getDatabaseClient();
+  const ctx = createContext();
 
   // Test 1: Create User
   console.log("1. Creating user...");
-  const user = await db.createUser({
+  const user = await db.createUser(ctx, {
     user_id: `user_${nanoid()}`,
     email: `test_${nanoid(6)}@example.com`,
     auth_provider: "clerk",
@@ -39,12 +41,12 @@ async function main() {
 
   // Test 2: Get User
   console.log("2. Fetching user...");
-  const fetchedUser = await db.getUser(user.user_id);
+  const fetchedUser = await db.getUser(ctx, user.user_id);
   console.log(`   ✓ Fetched user: ${fetchedUser?.email}\n`);
 
   // Test 3: Create Job
   console.log("3. Creating job...");
-  const job = await db.createJob({
+  const job = await db.createJob(ctx, {
     job_id: `job_${nanoid()}`,
     user_id: user.user_id,
     status: "planning",
@@ -78,25 +80,25 @@ async function main() {
 
   // Test 4: Update Job Status
   console.log("4. Updating job status...");
-  await db.updateJobStatus(job.job_id, "executing");
-  const updatedJob = await db.getJob(job.job_id);
+  await db.updateJobStatus(ctx, job.job_id, "executing");
+  const updatedJob = await db.getJob(ctx, job.job_id);
   console.log(`   ✓ Status updated to: ${updatedJob?.status}\n`);
 
   // Test 5: Add Reasoning Log
   console.log("5. Adding reasoning log entry...");
-  await db.addReasoningLog(job.job_id, {
+  await db.addReasoningLog(ctx, job.job_id, {
     ts: new Date(),
     agent: "planning",
     step: "analyze_request",
     thought: "Analyzing user request for test",
     decision: "Proceed with planning",
   });
-  const jobWithLog = await db.getJob(job.job_id);
+  const jobWithLog = await db.getJob(ctx, job.job_id);
   console.log(`   ✓ Reasoning log entries: ${jobWithLog?.reasoning_log.length}\n`);
 
   // Test 6: Create Plan
   console.log("6. Creating plan...");
-  const plan = await db.createPlan({
+  const plan = await db.createPlan(ctx, {
     plan_id: `plan_${nanoid()}`,
     job_id: job.job_id,
     version: 1,
@@ -130,7 +132,7 @@ async function main() {
 
   // Test 7: Create Work Item (16-state machine)
   console.log("7. Creating work item with 16-state status...");
-  const workItem = await db.createWorkItem({
+  const workItem = await db.createWorkItem(ctx, {
     work_id: `work_${nanoid()}`,
     job_id: job.job_id,
     plan_id: plan.plan_id,
@@ -179,9 +181,9 @@ async function main() {
   ] as const;
 
   for (const status of states) {
-    await db.updateWorkItemStatus(workItem.work_id, status);
+    await db.updateWorkItemStatus(ctx, workItem.work_id, status);
   }
-  const finalWorkItem = await db.getWorkItem(workItem.work_id);
+  const finalWorkItem = await db.getWorkItem(ctx, workItem.work_id);
   console.log(`   ✓ Final status: ${finalWorkItem?.status}\n`);
 
   console.log("═══════════════════════════════════════");

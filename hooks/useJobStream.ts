@@ -7,7 +7,7 @@
  * @see /docs/designs/frontend/TECH_DESIGN.md
  */
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import type {
   WorkItemStatus,
   JobStartedData,
@@ -154,7 +154,19 @@ export function useJobStream(
   job_id: string,
   config: Partial<ReconnectionConfig> = {}
 ): UseJobStreamReturn {
-  const reconnectionConfig = { ...DEFAULT_RECONNECTION_CONFIG, ...config };
+  // Memoize config to prevent object recreation on every render
+  const reconnectionConfig = useMemo(
+    () => ({ ...DEFAULT_RECONNECTION_CONFIG, ...config }),
+    // Only recreate if individual config values change
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [
+      config.initialDelayMs,
+      config.maxDelayMs,
+      config.backoffMultiplier,
+      config.maxAttempts,
+      config.jitterFactor,
+    ]
+  );
 
   const [jobState, setJobState] = useState<JobState | null>(null);
   const [workItems, setWorkItems] = useState<Map<string, WorkItemDisplay>>(
@@ -175,24 +187,24 @@ export function useJobStream(
     null
   );
   const attemptCountRef = useRef(0);
+  // Store config in ref to avoid stale closures
+  const configRef = useRef(reconnectionConfig);
+  configRef.current = reconnectionConfig;
 
   /**
    * Calculate delay with exponential backoff and jitter
+   * Uses ref to avoid dependency changes
    */
-  const calculateDelay = useCallback(
-    (attempt: number): number => {
-      const baseDelay = Math.min(
-        reconnectionConfig.initialDelayMs *
-          Math.pow(reconnectionConfig.backoffMultiplier, attempt),
-        reconnectionConfig.maxDelayMs
-      );
-      // Add jitter to prevent thundering herd
-      const jitter =
-        baseDelay * reconnectionConfig.jitterFactor * (Math.random() - 0.5);
-      return Math.round(baseDelay + jitter);
-    },
-    [reconnectionConfig]
-  );
+  const calculateDelay = useCallback((attempt: number): number => {
+    const cfg = configRef.current;
+    const baseDelay = Math.min(
+      cfg.initialDelayMs * Math.pow(cfg.backoffMultiplier, attempt),
+      cfg.maxDelayMs
+    );
+    // Add jitter to prevent thundering herd
+    const jitter = baseDelay * cfg.jitterFactor * (Math.random() - 0.5);
+    return Math.round(baseDelay + jitter);
+  }, []);
 
   /**
    * Connect to the SSE stream
@@ -393,13 +405,14 @@ export function useJobStream(
     eventSource.addEventListener("heartbeat", () => {
       // Connection is healthy - nothing to do, but confirms we're receiving events
     });
-  }, [job_id, calculateDelay, reconnectionConfig.maxAttempts]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [job_id]); // Only reconnect when job_id changes, other deps accessed via refs
 
-  // Initial connection
+  // Initial connection - only runs once per job_id
   useEffect(() => {
     connect();
 
-    // Cleanup on unmount
+    // Cleanup on unmount or job_id change
     return () => {
       if (eventSourceRef.current) {
         eventSourceRef.current.close();
@@ -410,7 +423,8 @@ export function useJobStream(
         reconnectTimeoutRef.current = null;
       }
     };
-  }, [connect]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [job_id]); // Only run on mount and job_id change, connect is stable for same job_id
 
   /**
    * Manual reconnect function for UI retry button
@@ -418,7 +432,8 @@ export function useJobStream(
   const reconnect = useCallback(() => {
     attemptCountRef.current = 0;
     connect();
-  }, [connect]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [job_id]); // Same stability as connect - only changes with job_id
 
   return {
     jobState,

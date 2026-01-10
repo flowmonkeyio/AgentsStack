@@ -489,6 +489,9 @@ async function planningAgentNodeImpl(ctx: RequestContext, state: OrchestrationSt
     ? `Revised plan addressing: ${state.plan_verification_feedback?.join(", ")}`
     : `Created plan with ${todosCount} action items, estimated cost: $${totalEstimatedCost.toFixed(2)}`;
 
+  // Log state mutations
+  logger.debug(ctx, `operation=planning_agent_state_update job_id=${state.job_id} fields=plan,token_usage,reasoning,decision decision=call_planning_complete`);
+
   return {
     plan: result.data,
     token_usage: appendOperation(state.token_usage, result.operation),

@@ -10,6 +10,10 @@
 
 import { EventEmitter } from "events";
 import type { IntegrationEvent } from "./types";
+import type { RequestContext } from "@/lib/logging";
+import { createLogger } from "@/lib/logging";
+
+const logger = createLogger("events");
 
 // =============================================================================
 // EVENT BUS SINGLETON
@@ -68,9 +72,15 @@ export type IntegrationEventHandler = (event: IntegrationEvent) => void;
  * - SSE handler (streams to frontend)
  * - Other modules (inter-module communication)
  *
+ * @param ctx - Request context for tracing
  * @param event - The event to emit
  */
-export function emitEvent(event: IntegrationEvent): void {
+export function emitEvent(ctx: RequestContext, event: IntegrationEvent): void {
+  const jobId = "job_id" in event ? event.job_id : "unknown";
+  const listenerCount = eventBus.listenerCount(event.type) + eventBus.listenerCount(WILDCARD_EVENT);
+
+  logger.debug(ctx, `operation=emit_event type=${event.type} job_id=${jobId} listeners=${listenerCount}`);
+
   // Emit to specific event type listeners
   eventBus.emit(event.type, event);
   // Also emit to catch-all for SSE streaming
@@ -85,41 +95,64 @@ export function emitEvent(event: IntegrationEvent): void {
  * Subscribe to all integration events.
  * Used by SSE handler to stream events to frontend.
  *
+ * @param ctx - Request context for tracing
  * @param handler - Function to call when events occur
  * @returns Unsubscribe function
  */
 export function subscribeToEvents(
+  ctx: RequestContext,
   handler: IntegrationEventHandler
 ): () => void {
+  const listenerCount = eventBus.listenerCount(WILDCARD_EVENT);
+  logger.info(ctx, `operation=subscribe_events type=wildcard current_listeners=${listenerCount}`);
+
   eventBus.on(WILDCARD_EVENT, handler);
-  return () => eventBus.off(WILDCARD_EVENT, handler);
+
+  return () => {
+    eventBus.off(WILDCARD_EVENT, handler);
+    const remainingListeners = eventBus.listenerCount(WILDCARD_EVENT);
+    logger.info(ctx, `operation=unsubscribe_events type=wildcard remaining_listeners=${remainingListeners}`);
+  };
 }
 
 /**
  * Subscribe to a specific event type.
  *
+ * @param ctx - Request context for tracing
  * @param eventType - The event type to subscribe to
  * @param handler - Function to call when events occur
  * @returns Unsubscribe function
  */
 export function subscribeToEventType(
+  ctx: RequestContext,
   eventType: IntegrationEvent["type"],
   handler: IntegrationEventHandler
 ): () => void {
+  const listenerCount = eventBus.listenerCount(eventType);
+  logger.info(ctx, `operation=subscribe_events type=${eventType} current_listeners=${listenerCount}`);
+
   eventBus.on(eventType, handler);
-  return () => eventBus.off(eventType, handler);
+
+  return () => {
+    eventBus.off(eventType, handler);
+    const remainingListeners = eventBus.listenerCount(eventType);
+    logger.info(ctx, `operation=unsubscribe_events type=${eventType} remaining_listeners=${remainingListeners}`);
+  };
 }
 
 /**
  * Subscribe to an event type once (auto-unsubscribe after first event).
  *
+ * @param ctx - Request context for tracing
  * @param eventType - The event type to subscribe to
  * @param handler - Function to call when event occurs
  */
 export function subscribeOnce(
+  ctx: RequestContext,
   eventType: IntegrationEvent["type"],
   handler: IntegrationEventHandler
 ): void {
+  logger.debug(ctx, `operation=subscribe_once type=${eventType}`);
   eventBus.once(eventType, handler);
 }
 
@@ -145,8 +178,12 @@ export function getListenerCount(eventType?: string): number {
 
 /**
  * Remove all listeners (useful for testing).
+ *
+ * @param ctx - Request context for tracing
  */
-export function removeAllListeners(): void {
+export function removeAllListeners(ctx: RequestContext): void {
+  const totalListeners = getListenerCount();
+  logger.info(ctx, `operation=remove_all_listeners total_removed=${totalListeners}`);
   eventBus.removeAllListeners();
 }
 

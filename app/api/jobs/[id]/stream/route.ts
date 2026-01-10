@@ -143,9 +143,11 @@ export async function GET(
 
     // Subscribe to orchestration events for this job
     unsubscribe = orchestration.subscribe(job_id, (event) => {
+      // Spread the event to include all its properties as data
+      const { type, ...data } = event;
       send({
-        type: event.type,
-        data: event.data,
+        type,
+        data,
         timestamp: new Date().toISOString(),
       });
     });

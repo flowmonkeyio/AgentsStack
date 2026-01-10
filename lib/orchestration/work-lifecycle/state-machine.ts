@@ -21,6 +21,7 @@ import type {
   SpawnResult,
   IWorkLifecycle,
   Transition,
+  AnyTransition,
 } from "./types";
 import { DEFAULT_RETRY_LIMITS } from "./types";
 import { TRANSITIONS } from "./transitions";
@@ -61,9 +62,9 @@ export interface ExtendedDatabaseClient extends DatabaseClient {
 // =============================================================================
 
 /**
- * Event emitter function type
+ * Event emitter function type (ctx is passed at call time for tracing)
  */
-export type EventEmitter = (event: WorkLifecycleEvent) => void;
+export type EventEmitter = (ctx: RequestContext, event: WorkLifecycleEvent) => void;
 
 // =============================================================================
 // WORK LIFECYCLE CLASS
@@ -120,20 +121,16 @@ export class WorkLifecycle implements IWorkLifecycle {
 
     // Check guard (guard functions are typed per transition)
     // Type assertion needed because we're working with a union of all transition types
-    if (
-      transition.guard &&
-      !transition.guard(work, payload as Parameters<typeof transition.guard>[1])
-    ) {
+    const guardFn = transition.guard as ((work: WorkItem, payload: unknown) => boolean) | undefined;
+    if (guardFn && !guardFn(work, payload)) {
       logger.warn(ctx, `operation=transition_blocked work_id=${work_id} from=${work.status} trigger=${trigger} reason=guard_failed guard=${transition.guardName}`);
       return { success: false, error: `Guard failed: ${transition.guardName}` };
     }
 
     // Execute transition to get field updates
     // Type assertion needed because we're working with a union of all transition types
-    const updates = transition.execute(
-      work,
-      payload as Parameters<typeof transition.execute>[1]
-    );
+    const executeFn = transition.execute as (work: WorkItem, payload: unknown) => Partial<WorkItem>;
+    const updates = executeFn(work, payload);
 
     // Use DatabaseClient method to update work item
     // The updateWorkItemFields method performs a partial update
@@ -152,7 +149,7 @@ export class WorkLifecycle implements IWorkLifecycle {
     };
 
     // Emit the event
-    this.emitEvent(event);
+    this.emitEvent(ctx, event);
 
     return {
       success: true,
@@ -267,7 +264,7 @@ export class WorkLifecycle implements IWorkLifecycle {
     }
 
     // Emit event for spawned TODOs
-    this.emitEvent({
+    this.emitEvent(ctx, {
       type: "todo:spawned",
       parent_id: request.parent_todo_id,
       new_todos: newActionItems,
@@ -379,7 +376,7 @@ export class WorkLifecycle implements IWorkLifecycle {
   private getTransition(
     from: WorkItem["status"],
     trigger: TransitionTrigger
-  ): Transition | null {
+  ): AnyTransition | null {
     return TRANSITIONS.find((t) => t.from === from && t.trigger === trigger) ?? null;
   }
 

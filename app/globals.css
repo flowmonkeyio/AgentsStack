@@ -671,13 +671,34 @@ h1, h2, h3, h4, h5, h6,
   box-shadow: none !important;
 }
 
-/* Restore only the borders we want */
-.cl-formFieldInput {
-  border: 1.5px solid #e5e7eb !important;
+/* FORCE input styling */
+input[class*="cl-formFieldInput"],
+input[class*="cl-input"],
+.cl-card input,
+.clerk-card-premium input {
+  background: #f8fafc !important;
+  border: 2px solid #cbd5e1 !important;
+  border-radius: 10px !important;
+  padding: 14px 16px !important;
+  font-size: 15px !important;
+  color: #1e293b !important;
+  box-shadow: inset 0 1px 2px rgba(0,0,0,0.06) !important;
 }
 
-.cl-formFieldInput:focus {
+input[class*="cl-formFieldInput"]:hover,
+input[class*="cl-input"]:hover,
+.cl-card input:hover {
+  border-color: #94a3b8 !important;
+  background: #ffffff !important;
+}
+
+input[class*="cl-formFieldInput"]:focus,
+input[class*="cl-input"]:focus,
+.cl-card input:focus {
   border-color: #0d9488 !important;
+  background: #ffffff !important;
+  box-shadow: 0 0 0 3px rgba(13, 148, 136, 0.2) !important;
+  outline: none !important;
 }
 
 .cl-socialButtonsBlockButton {
@@ -757,26 +778,6 @@ h1, h2, h3, h4, h5, h6,
   transform: translateY(0) !important;
 }
 
-.cl-formFieldInput {
-  background: #f8f9fb !important;
-  border: 1.5px solid #e8eaed !important;
-  border-radius: 0.875rem !important;
-  color: #1a1d23 !important;
-  font-size: 0.9375rem !important;
-  padding: 0.9375rem 1.125rem !important;
-  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1) !important;
-}
-
-.cl-formFieldInput:hover {
-  background: #f4f5f7 !important;
-  border-color: #d1d5db !important;
-}
-
-.cl-formFieldInput:focus {
-  background: #ffffff !important;
-  border-color: #0d9488 !important;
-  box-shadow: 0 0 0 4px rgba(13, 148, 136, 0.08) !important;
-}
 
 .cl-formFieldLabel {
   color: #4b5563 !important;

@@ -15,15 +15,123 @@
 
 import type { RequestContext } from "@/lib/logging";
 import { createLogger } from "@/lib/logging";
-import type { WorkItem, ActionItem } from "@/types";
+import type { WorkItem, ActionItem, Agent, PromptTemplate } from "@/types";
 import type { OrchestrationState } from "../types";
 import {
   getActionableTodos,
   allTodosCompleted,
   synthesizeOutput,
 } from "../utils";
+import { getDiscoveryService, type RerankResult } from "@/lib/orchestration/discovery";
+import { getDatabaseClient } from "@/lib/db";
 
 const logger = createLogger("graph");
+
+// =============================================================================
+// DISCOVERY HELPERS
+// =============================================================================
+
+/**
+ * Convert a RerankResult from discovery to an Agent type.
+ * Note: Some fields like wallet and url need to be fetched from DB if needed.
+ */
+function rerankResultToAgent(result: RerankResult): Agent {
+  return {
+    agent_id: result.agent_id,
+    name: result.name,
+    capabilities: result.capabilities,
+    capabilities_embedding: [], // Not needed for planning
+    url: "", // Not available from discovery, will be fetched when dispatching
+    wallet: "", // Not available from discovery, will be fetched when dispatching
+    pricing: {
+      base_price: result.base_price,
+      negotiable: false,
+      min_price: result.base_price * 0.8, // Assume 20% negotiable
+    },
+    stats: {
+      avg_score: result.stats.avg_score,
+      jobs_completed: result.stats.jobs_completed,
+      avg_response_time_ms: 0, // Not available from discovery
+    },
+    supports_async: true,
+    supports_callback: true,
+    registered_at: new Date(),
+  };
+}
+
+/**
+ * Discover available agents for a task using the discovery service.
+ *
+ * @param ctx - Request context
+ * @param prompt - Task description for agent discovery
+ * @param budget - Budget constraint
+ * @returns Array of discovered agents
+ */
+async function discoverAgentsForTask(
+  ctx: RequestContext,
+  prompt: string,
+  budget: number
+): Promise<Agent[]> {
+  logger.info(ctx, `operation=discover_agents prompt_length=${prompt.length} budget=${budget}`);
+
+  try {
+    const discoveryService = getDiscoveryService();
+
+    const result = await discoveryService.discoverAgents(ctx, {
+      task_description: prompt,
+      max_price: budget,
+      min_quality: 0.7, // Minimum quality threshold
+      limit: 20, // Get up to 20 agents
+    });
+
+    const agents = result.candidates.map(rerankResultToAgent);
+
+    logger.info(ctx, `operation=discover_agents candidates_found=${agents.length} search_time_ms=${result.search_time_ms} total_cost=${result.total_cost.toFixed(6)}`);
+
+    return agents;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.error(ctx, `operation=discover_agents status=failed error="${message}"`, error instanceof Error ? error : undefined);
+    // Return empty array on error - planning will proceed without agent recommendations
+    return [];
+  }
+}
+
+/**
+ * Fetch available prompt templates from the database.
+ * Fetches templates for common agent types.
+ *
+ * @param ctx - Request context
+ * @returns Array of available templates
+ */
+async function fetchPromptTemplates(ctx: RequestContext): Promise<PromptTemplate[]> {
+  logger.debug(ctx, `operation=fetch_prompt_templates`);
+
+  try {
+    const db = getDatabaseClient();
+
+    // Fetch templates for common agent types
+    const agentTypes = ["content", "design", "code", "research", "generic"];
+    const templatePromises = agentTypes.map((type) =>
+      db.getTemplatesByType(ctx, type).catch(() => [])
+    );
+
+    const templateArrays = await Promise.all(templatePromises);
+    const templates = templateArrays.flat();
+
+    // Deduplicate by template_id
+    const uniqueTemplates = Array.from(
+      new Map(templates.map((t) => [t.template_id, t])).values()
+    );
+
+    logger.debug(ctx, `operation=fetch_prompt_templates count=${uniqueTemplates.length}`);
+    return uniqueTemplates;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.error(ctx, `operation=fetch_prompt_templates status=failed error="${message}"`);
+    return [];
+  }
+}
 
 // =============================================================================
 // TYPE DEFINITIONS
@@ -164,19 +272,39 @@ async function mainAgentNodeImpl(
   logger.info(ctx, `operation=main_agent job_id=${state.job_id} trigger=${state.trigger}`);
 
   // Case 1: New job or continuation without a plan -> call planning
-  if (state.trigger === "new_job" && !state.plan) {
-    logger.info(ctx, `operation=main_agent job_id=${state.job_id} decision=call_planning reason=new_job_no_plan`);
-    return {
-      decision: "call_planning",
-      reasoning: "New job, need to create plan",
-    };
-  }
+  // First, discover agents and fetch templates if not already populated
+  if ((state.trigger === "new_job" || state.trigger === "continue") && !state.plan) {
+    const reason = state.trigger === "new_job"
+      ? "new_job_no_plan"
+      : "continuation_no_plan";
 
-  if (state.trigger === "continue" && !state.plan) {
-    logger.info(ctx, `operation=main_agent job_id=${state.job_id} decision=call_planning reason=continuation_no_plan`);
+    logger.info(ctx, `operation=main_agent job_id=${state.job_id} decision=call_planning reason=${reason}`);
+
+    // Discover agents if not already populated
+    let availableAgents = state.available_agents;
+    let availableTemplates = state.available_templates;
+
+    if (availableAgents.length === 0) {
+      logger.info(ctx, `operation=main_agent job_id=${state.job_id} action=discovering_agents`);
+      const prompt = state.continuation_prompt ?? state.prompt;
+      const [agents, templates] = await Promise.all([
+        discoverAgentsForTask(ctx, prompt, state.budget),
+        fetchPromptTemplates(ctx),
+      ]);
+      availableAgents = agents;
+      availableTemplates = templates;
+      logger.info(ctx, `operation=main_agent job_id=${state.job_id} discovered_agents=${agents.length} templates=${templates.length}`);
+    }
+
+    const reasoning = state.trigger === "new_job"
+      ? "New job, need to create plan"
+      : `Continuation requested: "${state.continuation_prompt}"`;
+
     return {
       decision: "call_planning",
-      reasoning: `Continuation requested: "${state.continuation_prompt}"`,
+      reasoning,
+      available_agents: availableAgents,
+      available_templates: availableTemplates,
     };
   }
 

@@ -238,19 +238,17 @@ async function findActiveJobs(
 ): Promise<Array<{ job_id: string }>> {
   logger.debug(ctx, "operation=find_active_jobs status=started");
 
-  // Note: Would need a getJobsByStatus method on DatabaseClient
-  // For now, this is a placeholder that returns an empty array
-  // The actual implementation would query jobs with status in:
-  // ["planning", "plan_verification", "executing"]
+  // Query jobs with active statuses that need recovery
+  const activeStatuses: Array<"planning" | "plan_verification" | "executing"> = [
+    "planning",
+    "plan_verification",
+    "executing",
+  ];
 
-  // This is a limitation of the current DatabaseClient interface
-  // A proper implementation would be:
-  // return db.getJobsByStatus(["planning", "plan_verification", "executing"]);
+  const jobs = await db.getJobsByStatus(ctx, activeStatuses);
 
-  const jobs: Array<{ job_id: string }> = [];
-
-  logger.debug(ctx, `operation=find_active_jobs count=${jobs.length} status=completed`);
-  return jobs;
+  logger.info(ctx, `operation=find_active_jobs count=${jobs.length} status=completed`);
+  return jobs.map((job) => ({ job_id: job.job_id }));
 }
 
 /**

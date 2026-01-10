@@ -75,8 +75,8 @@ export interface DispatchDependencies {
   db: DatabaseClient & ExtendedDatabaseClient;
   /** Work lifecycle for state transitions */
   lifecycle: IWorkLifecycle;
-  /** Event emitter function */
-  emitEvent: (event: IntegrationEvent) => void;
+  /** Event emitter function (ctx is bound at injection time) */
+  emitEvent: (ctx: RequestContext, event: IntegrationEvent) => void;
 }
 
 /**
@@ -163,7 +163,7 @@ export async function dispatchToAgent(
   // Call external agent
   let response;
   try {
-    response = await externalAgents.execute(work.agent.url, request);
+    response = await externalAgents.execute(ctx, work.agent.url, request);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
     logger.error(ctx, `operation=dispatch_failed work_id=${work_id} agent_id=${work.agent.agent_id} reason=agent_error`, error instanceof Error ? error : undefined);
@@ -191,7 +191,7 @@ export async function dispatchToAgent(
     // Store external agent usage
     await storeExternalAgentUsage(ctx, work_id, response.usage, deps);
 
-    emitEvent({
+    emitEvent(ctx, {
       type: "work:output_received",
       work_id,
       title: getOutputTitle(response.output),
@@ -297,7 +297,7 @@ export async function pollAgent(
   // Poll external agent
   let response;
   try {
-    response = await externalAgents.checkStatus(work.external_ref.status_url);
+    response = await externalAgents.checkStatus(ctx, work.external_ref.status_url);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
     logger.warn(ctx, `operation=poll_agent work_id=${work_id} status=poll_error error=${message}`);
@@ -327,7 +327,7 @@ export async function pollAgent(
     // Store usage
     await storeExternalAgentUsage(ctx, work_id, response.usage, deps);
 
-    emitEvent({
+    emitEvent(ctx, {
       type: "work:output_received",
       work_id,
       title: getOutputTitle(response.output),
@@ -519,7 +519,7 @@ export async function handleAgentCallback(
     // Store usage
     await storeExternalAgentUsage(ctx, work_id, body.usage, deps);
 
-    emitEvent({
+    emitEvent(ctx, {
       type: "work:output_received",
       work_id,
       title: body.output.title,
@@ -630,7 +630,7 @@ async function storeExternalAgentUsage(
   // The actual token_usage update would need to be done via a specialized method
   // For now, we'll emit an event and let the caller handle storage
 
-  emitEvent({
+  emitEvent(ctx, {
     type: "work:usage_recorded",
     work_id,
     agent_id,

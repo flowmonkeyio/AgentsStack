@@ -6,6 +6,7 @@ import Link from "next/link";
 import { useAuth } from "@clerk/nextjs";
 import { useJobStream } from "@/hooks/useJobStream";
 import { api, APIClientError } from "@/lib/api-client";
+import { Breadcrumb } from "@/components/layout";
 
 // Components
 import { JobStatusBadge } from "@/components/job/JobStatusBadge";
@@ -119,11 +120,12 @@ export default function JobDetailPage() {
   // Auth loading state
   if (!isLoaded) {
     return (
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
-        <div className="animate-pulse space-y-6">
-          <div className="h-8 bg-background-card rounded-lg w-1/3" />
-          <div className="h-4 bg-background-card rounded-lg w-2/3" />
-          <div className="h-32 bg-background-card rounded-xl" />
+      <div className="space-y-6">
+        <div className="animate-pulse">
+          <div className="h-4 bg-background-card rounded w-48 mb-6" />
+          <div className="h-8 bg-background-card rounded-lg w-1/3 mb-2" />
+          <div className="h-4 bg-background-card rounded-lg w-2/3 mb-8" />
+          <div className="h-32 bg-background-card rounded-xl mb-6" />
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <div className="lg:col-span-2 h-64 bg-background-card rounded-xl" />
             <div className="h-64 bg-background-card rounded-xl" />
@@ -136,7 +138,7 @@ export default function JobDetailPage() {
   // Not signed in
   if (!isSignedIn) {
     return (
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-20">
+      <div className="py-12">
         <div className="max-w-md mx-auto text-center">
           <div className="w-16 h-16 rounded-2xl bg-primary-muted flex items-center justify-center mx-auto mb-6">
             <svg className="w-8 h-8 text-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -158,16 +160,17 @@ export default function JobDetailPage() {
   // Initial loading state
   if (initialLoading) {
     return (
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
-        <div className="animate-pulse space-y-6">
-          <div className="flex justify-between items-center">
+      <div className="space-y-6">
+        <div className="animate-pulse">
+          <div className="h-4 bg-background-card rounded w-48 mb-6" />
+          <div className="flex justify-between items-center mb-8">
             <div className="space-y-2">
               <div className="h-8 bg-background-card rounded-lg w-48" />
               <div className="h-4 bg-background-card rounded-lg w-96" />
             </div>
             <div className="h-8 bg-background-card rounded-full w-24" />
           </div>
-          <div className="h-28 bg-background-card rounded-xl" />
+          <div className="h-28 bg-background-card rounded-xl mb-6" />
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <div className="lg:col-span-2 space-y-4">
               <div className="h-6 bg-background-card rounded w-32" />
@@ -187,7 +190,13 @@ export default function JobDetailPage() {
   // Error state
   if (initialError) {
     return (
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-20">
+      <div className="py-12">
+        <Breadcrumb
+          items={[
+            { label: "Jobs", href: "/jobs" },
+            { label: "Error" },
+          ]}
+        />
         <div className="max-w-md mx-auto text-center">
           <div className="w-16 h-16 rounded-2xl bg-destructive-muted flex items-center justify-center mx-auto mb-6">
             <svg className="w-8 h-8 text-destructive" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -210,7 +219,13 @@ export default function JobDetailPage() {
   // No job found
   if (!initialJob) {
     return (
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-20">
+      <div className="py-12">
+        <Breadcrumb
+          items={[
+            { label: "Jobs", href: "/jobs" },
+            { label: "Not Found" },
+          ]}
+        />
         <div className="max-w-md mx-auto text-center">
           <div className="w-16 h-16 rounded-2xl bg-warning-muted flex items-center justify-center mx-auto mb-6">
             <svg className="w-8 h-8 text-warning" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -221,8 +236,8 @@ export default function JobDetailPage() {
           <p className="text-foreground-muted mb-8">
             The job you&apos;re looking for doesn&apos;t exist or has been deleted.
           </p>
-          <Link href="/" className="btn-primary">
-            Back to Dashboard
+          <Link href="/jobs" className="btn-primary">
+            Back to Jobs
           </Link>
         </div>
       </div>
@@ -230,18 +245,17 @@ export default function JobDetailPage() {
   }
 
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
+    <div className="space-y-8">
       {/* Breadcrumb */}
-      <nav className="flex items-center gap-2 text-sm text-foreground-muted mb-8">
-        <Link href="/" className="hover:text-primary transition-colors">Dashboard</Link>
-        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-        </svg>
-        <span className="text-foreground font-medium truncate max-w-[200px]">Job {job_id.slice(0, 8)}...</span>
-      </nav>
+      <Breadcrumb
+        items={[
+          { label: "Jobs", href: "/jobs" },
+          { label: `Job ${job_id.slice(4, 12)}...` },
+        ]}
+      />
 
       {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:justify-between sm:items-start gap-4 mb-8">
+      <div className="flex flex-col sm:flex-row sm:justify-between sm:items-start gap-4">
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-3 mb-2">
             <h1 className="font-heading text-2xl sm:text-3xl font-bold text-foreground truncate">
@@ -257,7 +271,7 @@ export default function JobDetailPage() {
 
       {/* Connection indicator */}
       {!connectionState.isConnected && (
-        <div className="mb-6 p-4 rounded-xl bg-warning-muted border border-warning/20 flex items-center justify-between flex-wrap gap-3">
+        <div className="p-4 rounded-xl bg-warning-muted border border-warning/20 flex items-center justify-between flex-wrap gap-3">
           <div className="flex items-center gap-3">
             <div className="w-8 h-8 rounded-lg bg-warning/20 flex items-center justify-center">
               <svg className="w-4 h-4 text-warning" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -287,9 +301,7 @@ export default function JobDetailPage() {
       )}
 
       {/* Budget display */}
-      <div className="mb-8">
-        <BudgetDisplay budget={initialJob.budget} />
-      </div>
+      <BudgetDisplay budget={initialJob.budget} />
 
       {/* Main content grid */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -351,17 +363,15 @@ export default function JobDetailPage() {
 
       {/* Continuation input (only when completed) */}
       {currentStatus === "completed" && (
-        <div className="mt-8">
-          <ContinuationInput
-            job_id={job_id}
-            onSubmit={handleContinue}
-            disabled={isContinuing}
-          />
-        </div>
+        <ContinuationInput
+          job_id={job_id}
+          onSubmit={handleContinue}
+          disabled={isContinuing}
+        />
       )}
 
       {/* Payment trail */}
-      <div className="mt-8 space-y-4">
+      <div className="space-y-4">
         <div className="flex items-center gap-2">
           <div className="w-8 h-8 rounded-lg bg-accent-muted flex items-center justify-center">
             <svg className="w-4 h-4 text-accent" fill="none" stroke="currentColor" viewBox="0 0 24 24">
