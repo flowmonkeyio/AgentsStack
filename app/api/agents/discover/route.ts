@@ -28,7 +28,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const results = await discoverAgents(query, limit);
+    const results = await discoverAgents(ctx, query, limit);
 
     logger.info(ctx, `operation=discover_agents query_length=${query.length} results_count=${results.length} status=success`);
     return NextResponse.json({ results });

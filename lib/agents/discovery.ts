@@ -10,6 +10,7 @@
 
 import { VoyageAIClient } from "voyageai";
 import { getAgentsCollection, getDatabaseClient } from "@/lib/db";
+import type { RequestContext } from "@/lib/logging";
 import type { Agent } from "@/types";
 
 let voyageClient: VoyageAIClient | null = null;
@@ -50,11 +51,13 @@ export interface AgentDiscoveryResult {
 /**
  * Discover agents matching required capabilities using vector search.
  *
+ * @param ctx - Request context for tracing
  * @param query - Natural language description of required capabilities
  * @param limit - Maximum number of agents to return
  * @returns Array of agents with similarity scores
  */
 export async function discoverAgents(
+  ctx: RequestContext,
   query: string,
   limit: number = 5
 ): Promise<AgentDiscoveryResult[]> {
@@ -105,11 +108,12 @@ export async function discoverAgents(
 /**
  * Update an agent's capability embedding.
  *
+ * @param ctx - Request context for tracing
  * @param agent_id - Agent ID
  */
-export async function updateAgentEmbedding(agent_id: string): Promise<void> {
+export async function updateAgentEmbedding(ctx: RequestContext, agent_id: string): Promise<void> {
   const db = getDatabaseClient();
-  const agent = await db.getAgent(agent_id);
+  const agent = await db.getAgent(ctx, agent_id);
 
   if (!agent) {
     throw new Error(`Agent not found: ${agent_id}`);

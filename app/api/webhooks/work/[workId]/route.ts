@@ -35,11 +35,15 @@ export async function POST(
   const { workId } = await params;
   logger.info(ctx, `operation=webhook work_id=${workId} started=true`);
 
+  // Capture raw body for HMAC verification
+  const rawBody = await request.text();
+  const signatureHeader = request.headers.get("x-signature") ?? undefined;
+
   try {
     // Parse request body
     let body: AgentCallbackRequest;
     try {
-      body = await request.json();
+      body = JSON.parse(rawBody);
     } catch {
       logger.info(ctx, `operation=webhook work_id=${workId} status=invalid_json`);
       return NextResponse.json(
@@ -91,7 +95,7 @@ export async function POST(
 
     // Get work item to validate reference_id
     const db = getDatabaseClient();
-    const workItem = await db.getWorkItem(workId);
+    const workItem = await db.getWorkItem(ctx, workId);
 
     if (!workItem) {
       logger.info(ctx, `operation=webhook work_id=${workId} status=not_found`);
@@ -110,15 +114,22 @@ export async function POST(
       );
     }
 
-    // Forward to orchestration for processing
+    // Store the callback data on the work item for orchestration to process
     try {
-      const { OrchestrationEngine } = await import("@/lib/orchestration");
-      const orchestration = OrchestrationEngine.getInstance();
-      await orchestration.handleAgentCallback(ctx, workId, body);
-    } catch (orchestrationError) {
+      if (body.status === "completed" && body.output) {
+        logger.info(ctx, `operation=webhook work_id=${workId} action=store_output`);
+        // Update work item with received output
+        const output = body.output as { title: string; description: string; content: unknown };
+        await db.updateWorkItemOutput(ctx, workId, output);
+        await db.updateWorkItemStatus(ctx, workId, "received");
+      } else if (body.status === "failed") {
+        logger.info(ctx, `operation=webhook work_id=${workId} action=mark_failed error=${body.error}`);
+        await db.updateWorkItemStatus(ctx, workId, "failed");
+      }
+      // Progress updates are informational only - logged above
+    } catch (dbError) {
       // Log error but don't fail the webhook - we've received the data
-      logger.error(ctx, `operation=webhook work_id=${workId} orchestration_status=failed`, orchestrationError instanceof Error ? orchestrationError : undefined);
-      // Continue to return success - the webhook was received
+      logger.error(ctx, `operation=webhook work_id=${workId} db_status=failed`, dbError instanceof Error ? dbError : undefined);
     }
 
     // Return success

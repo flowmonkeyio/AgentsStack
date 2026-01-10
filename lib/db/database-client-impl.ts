@@ -171,6 +171,20 @@ export class DatabaseClientImpl implements DatabaseClient {
     }
   }
 
+  async getJobsByStatus(ctx: RequestContext, statuses: Job["status"][]): Promise<Job[]> {
+    logger.debug(ctx, `operation=get_jobs_by_status statuses=${statuses.join(",")} status=started`);
+    const start = Date.now();
+    try {
+      const collection = await getJobsCollection();
+      const results = await collection.find({ status: { $in: statuses } }).toArray();
+      logger.info(ctx, `operation=get_jobs_by_status statuses=${statuses.join(",")} count=${results.length} duration_ms=${Date.now() - start} status=completed`);
+      return results;
+    } catch (error) {
+      logger.error(ctx, `operation=get_jobs_by_status statuses=${statuses.join(",")} status=failed`, error as Error);
+      throw error;
+    }
+  }
+
   async updateJobBudget(ctx: RequestContext, job_id: string, budget: Job["budget"]): Promise<void> {
     logger.debug(ctx, `operation=update_job_budget job_id=${job_id} status=started`);
     const start = Date.now();
@@ -199,8 +213,7 @@ export class DatabaseClientImpl implements DatabaseClient {
       const collection = await getJobsCollection();
       await collection.updateOne(
         { job_id },
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        { $push: { reasoning_log: entry }, $set: { updated_at: new Date() } } as any
+        { $push: { reasoning_log: entry }, $set: { updated_at: new Date() } } as unknown as Parameters<typeof collection.updateOne>[1]
       );
       logger.info(ctx, `operation=add_reasoning_log job_id=${job_id} agent=${entry.agent} duration_ms=${Date.now() - start} status=completed`);
     } catch (error) {
@@ -231,16 +244,15 @@ export class DatabaseClientImpl implements DatabaseClient {
   }
 
   async addContextRef(ctx: RequestContext, job_id: string, ref: ContextRef): Promise<void> {
-    logger.debug(ctx, `operation=add_context_ref job_id=${job_id} ref_type=${ref.type} status=started`);
+    logger.debug(ctx, `operation=add_context_ref job_id=${job_id} work_id=${ref.work_id} status=started`);
     const start = Date.now();
     try {
       const collection = await getJobsCollection();
       await collection.updateOne(
         { job_id },
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        { $push: { context_refs: ref }, $set: { updated_at: new Date() } } as any
+        { $push: { context_refs: ref }, $set: { updated_at: new Date() } } as unknown as Parameters<typeof collection.updateOne>[1]
       );
-      logger.info(ctx, `operation=add_context_ref job_id=${job_id} ref_type=${ref.type} duration_ms=${Date.now() - start} status=completed`);
+      logger.info(ctx, `operation=add_context_ref job_id=${job_id} work_id=${ref.work_id} duration_ms=${Date.now() - start} status=completed`);
     } catch (error) {
       logger.error(ctx, `operation=add_context_ref job_id=${job_id} status=failed`, error as Error);
       throw error;
@@ -343,7 +355,7 @@ export class DatabaseClientImpl implements DatabaseClient {
   }
 
   async createWorkItem(ctx: RequestContext, item: Omit<WorkItem, "created_at">): Promise<WorkItem> {
-    logger.debug(ctx, `operation=create_work_item work_id=${item.work_id} job_id=${item.job_id} agent_id=${item.agent_id} status=started`);
+    logger.debug(ctx, `operation=create_work_item work_id=${item.work_id} job_id=${item.job_id} agent_id=${item.agent?.agent_id ?? "none"} status=started`);
     const start = Date.now();
     try {
       const collection = await getWorkItemsCollection();
@@ -352,7 +364,7 @@ export class DatabaseClientImpl implements DatabaseClient {
         created_at: new Date(),
       };
       await collection.insertOne(itemWithTimestamp);
-      logger.info(ctx, `operation=create_work_item work_id=${item.work_id} job_id=${item.job_id} agent_id=${item.agent_id} duration_ms=${Date.now() - start} status=completed`);
+      logger.info(ctx, `operation=create_work_item work_id=${item.work_id} job_id=${item.job_id} agent_id=${item.agent?.agent_id ?? "none"} duration_ms=${Date.now() - start} status=completed`);
       return itemWithTimestamp;
     } catch (error) {
       logger.error(ctx, `operation=create_work_item work_id=${item.work_id} status=failed`, error as Error);
@@ -396,9 +408,8 @@ export class DatabaseClientImpl implements DatabaseClient {
     try {
       const collection = await getWorkItemsCollection();
       await collection.updateOne({ work_id }, { $set: { verification } });
-      const passed = verification?.passed ?? "unknown";
       const score = verification?.score ?? "unknown";
-      logger.info(ctx, `operation=update_work_item_verification work_id=${work_id} passed=${passed} score=${score} duration_ms=${Date.now() - start} status=completed`);
+      logger.info(ctx, `operation=update_work_item_verification work_id=${work_id} score=${score} duration_ms=${Date.now() - start} status=completed`);
     } catch (error) {
       logger.error(ctx, `operation=update_work_item_verification work_id=${work_id} status=failed`, error as Error);
       throw error;
@@ -576,7 +587,7 @@ export class DatabaseClientImpl implements DatabaseClient {
   // =========================================================================
 
   async createTransaction(ctx: RequestContext, tx: Omit<Transaction, "created_at">): Promise<Transaction> {
-    logger.debug(ctx, `operation=create_transaction tx_id=${tx.tx_id} job_id=${tx.job_id} type=${tx.type} status=started`);
+    logger.debug(ctx, `operation=create_transaction tx_id=${tx.tx_id} job_id=${tx.job_id} work_id=${tx.work_id} status=started`);
     const start = Date.now();
     try {
       const collection = await getTransactionsCollection();
@@ -585,7 +596,7 @@ export class DatabaseClientImpl implements DatabaseClient {
         created_at: new Date(),
       };
       await collection.insertOne(txWithTimestamp);
-      logger.info(ctx, `operation=create_transaction tx_id=${tx.tx_id} job_id=${tx.job_id} type=${tx.type} amount=${tx.amount} duration_ms=${Date.now() - start} status=completed`);
+      logger.info(ctx, `operation=create_transaction tx_id=${tx.tx_id} job_id=${tx.job_id} work_id=${tx.work_id} amount=${tx.amount} duration_ms=${Date.now() - start} status=completed`);
       return txWithTimestamp;
     } catch (error) {
       logger.error(ctx, `operation=create_transaction tx_id=${tx.tx_id} status=failed`, error as Error);

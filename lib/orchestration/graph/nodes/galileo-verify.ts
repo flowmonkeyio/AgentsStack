@@ -257,7 +257,7 @@ async function galileoVerifyNodeImpl(
         issues: verificationResult.criteria_results.map((cr) => ({
           criterion: cr.criterion,
           passed: cr.passed,
-          detail: cr.detail ?? (cr.passed ? "Passed" : "Failed"),
+          detail: cr.passed ? "Passed" : "Failed",
         })),
         suggestions: verificationResult.suggestions,
       },

@@ -272,7 +272,7 @@ async function invokePromptLLM(
     };
   } catch (error) {
     const durationMs = Date.now() - startTime;
-    logger.error(ctx, `operation=invoke_prompt_llm model=${PROMPT_AGENT_MODEL} action_item_id=${actionItemId} duration_ms=${durationMs} status=failed`, error);
+    logger.error(ctx, `operation=invoke_prompt_llm model=${PROMPT_AGENT_MODEL} action_item_id=${actionItemId} duration_ms=${durationMs} status=failed`);
     throw error;
   }
 }
@@ -391,6 +391,9 @@ async function promptAgentNodeImpl(ctx: RequestContext, state: OrchestrationStat
 
   // Build reasoning
   const reasoning = `Generated prompt using template ${template.template_id}`;
+
+  // Log state mutations
+  logger.debug(ctx, `operation=prompt_agent_state_update job_id=${state.job_id} work_id=${currentWork.work_id} fields=token_usage,reasoning,decision decision=prompt_generated`);
 
   return {
     token_usage: appendOperation(state.token_usage, result.operation),

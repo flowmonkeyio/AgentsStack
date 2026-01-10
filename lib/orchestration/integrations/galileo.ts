@@ -80,8 +80,8 @@ export interface VerificationDependencies {
   db: DatabaseClient;
   /** Work lifecycle for state transitions */
   lifecycle: IWorkLifecycle;
-  /** Event emitter function */
-  emitEvent: (event: IntegrationEvent) => void;
+  /** Event emitter function (ctx is bound at injection time) */
+  emitEvent: (ctx: RequestContext, event: IntegrationEvent) => void;
 }
 
 /**
@@ -139,7 +139,7 @@ export async function verifyWork(
   // Call Galileo for verification
   let galileoResponse;
   try {
-    galileoResponse = await galileo.verify({
+    galileoResponse = await galileo.verify(ctx, {
       output: work.output.content,
       instructions: work.action.requirements,
       context: {
@@ -176,7 +176,7 @@ export async function verifyWork(
   if (decision === "pass") {
     await lifecycle.transition(ctx, work_id, "verification_pass", verificationPayload);
 
-    emitEvent({
+    emitEvent(ctx, {
       type: "work:verified",
       work_id,
       score: galileoResponse.score,
@@ -192,7 +192,7 @@ export async function verifyWork(
 
     logger.info(ctx, `operation=verify_work_retry work_id=${work_id} attempt=${work.attempt + 1} issues=${galileoResponse.issues.length}`);
 
-    emitEvent({
+    emitEvent(ctx, {
       type: "work:retry",
       work_id,
       attempt: work.attempt + 1,
@@ -205,7 +205,7 @@ export async function verifyWork(
 
     logger.warn(ctx, `operation=verify_work_rejected work_id=${work_id} score=${galileoResponse.score.toFixed(2)}`);
 
-    emitEvent({
+    emitEvent(ctx, {
       type: "work:failed",
       work_id,
       reason: `Rejected: score ${galileoResponse.score}`,

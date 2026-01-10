@@ -67,6 +67,12 @@ export interface DatabaseClient {
   updateJobStatus(ctx: RequestContext, job_id: string, status: Job["status"]): Promise<void>;
 
   /**
+   * Get all jobs with any of the specified statuses.
+   * Used for recovery on startup to find active jobs.
+   */
+  getJobsByStatus(ctx: RequestContext, statuses: Job["status"][]): Promise<Job[]>;
+
+  /**
    * Update job budget
    */
   updateJobBudget(ctx: RequestContext, job_id: string, budget: Job["budget"]): Promise<void>;

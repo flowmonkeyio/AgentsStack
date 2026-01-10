@@ -13,30 +13,13 @@
  * @see /docs/designs/orchestration/graph/TECH_DESIGN.md
  */
 
-import { StateGraph, END, START, MemorySaver } from "@langchain/langgraph";
+import { StateGraph, END, START } from "@langchain/langgraph";
+import { MongoDBSaver } from "@langchain/langgraph-checkpoint-mongodb";
 import type { MongoClient } from "mongodb";
 import type { RequestContext } from "@/lib/logging";
 import { createLogger, createContext } from "@/lib/logging";
 
 const logger = createLogger("graph");
-
-// TODO: Install @langchain/langgraph-checkpoint-mongodb when ready for production
-// For now, we use MemorySaver or a stub interface
-interface MongoDBSaverOptions {
-  client: MongoClient;
-  dbName: string;
-  collectionName: string;
-}
-
-// Stub for MongoDB checkpointer - replace with actual package when installed
-class MongoDBSaver extends MemorySaver {
-  constructor(_options: MongoDBSaverOptions) {
-    super();
-    // TODO: Implement MongoDB persistence
-    const ctx = createContext();
-    logger.warn(ctx, "operation=mongodb_saver status=fallback reason=in_memory_mode");
-  }
-}
 
 import { OrchestrationStateAnnotation, type OrchestrationState } from "./state";
 import type {
@@ -49,6 +32,34 @@ import type {
   GraphEvent,
 } from "./types";
 import { VERIFICATION_THRESHOLDS, MAX_VERIFICATION_RETRIES, MAX_PAYMENT_RETRIES } from "./utils";
+
+// =============================================================================
+// GRAPH TYPE DEFINITIONS
+// =============================================================================
+
+/**
+ * All node names in the orchestration graph.
+ * Used for proper typing of graph edges.
+ */
+type OrchestrationNodeName =
+  | "main_agent"
+  | "planning_agent"
+  | "plan_verifier"
+  | "prompt_agent"
+  | "dispatch_and_poll"
+  | "galileo_verify"
+  | "payment";
+
+/**
+ * Type for the StateGraph after nodes are added.
+ * This allows proper typing of addEdge and addConditionalEdges calls.
+ */
+type OrchestrationStateGraph = StateGraph<
+  typeof OrchestrationStateAnnotation,
+  OrchestrationState,
+  Partial<OrchestrationState>,
+  OrchestrationNodeName | typeof START
+>;
 
 // =============================================================================
 // NODE IMPORTS (from nodes directory - implemented by another agent)
@@ -354,10 +365,9 @@ export function buildOrchestrationGraph(ctx: RequestContext) {
   // SET ENTRY POINT
   // ==========================================================================
 
-  // Note: Type assertions needed because LangGraph's strict typing doesn't
-  // recognize dynamically added nodes. This is a known LangGraph limitation.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const graph = workflow as any;
+  // Type assertion to OrchestrationGraph after nodes are added.
+  // This is needed because StateGraph's generic type doesn't track dynamic node additions.
+  const graph = workflow as unknown as OrchestrationStateGraph;
 
   graph.addEdge(START, "main_agent");
 
@@ -426,20 +436,21 @@ export function buildOrchestrationGraph(ctx: RequestContext) {
  * @param ctx - Request context for logging
  * @param client - MongoDB client
  * @param dbName - Database name
- * @param collectionName - Collection name for checkpoints
+ * @param checkpointCollectionName - Collection name for checkpoints
  * @returns MongoDB checkpointer
  */
 export function createMongoCheckpointer(
   ctx: RequestContext,
   client: MongoClient,
   dbName: string = "agentstack",
-  collectionName: string = "graph_checkpoints"
+  checkpointCollectionName: string = "graph_checkpoints"
 ): MongoDBSaver {
-  logger.debug(ctx, `operation=create_checkpointer db=${dbName} collection=${collectionName}`);
+  logger.info(ctx, `operation=create_checkpointer db=${dbName} collection=${checkpointCollectionName} type=mongodb_persistent`);
   return new MongoDBSaver({
     client,
     dbName,
-    collectionName,
+    checkpointCollectionName,
+    checkpointWritesCollectionName: `${checkpointCollectionName}_writes`,
   });
 }
 
@@ -478,9 +489,8 @@ export function buildOrchestrationGraphWithCheckpointing(
   workflow.addNode("payment", (state: OrchestrationState) =>
     withApiTracing("payment", paymentNode)(ctx, state));
 
-  // Set entry point
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const graph = workflow as any;
+  // Type assertion to OrchestrationGraph after nodes are added.
+  const graph = workflow as unknown as OrchestrationStateGraph;
 
   graph.addEdge(START, "main_agent");
 
@@ -519,8 +529,9 @@ export function buildOrchestrationGraphWithCheckpointing(
   const checkpointer = createMongoCheckpointer(ctx, client, dbName, collectionName);
 
   logger.debug(ctx, "operation=graph_compiled type=checkpointed");
+  // Type assertion needed due to langgraph version compatibility
   return workflow.compile({
-    checkpointer,
+    checkpointer: checkpointer as any,
   });
 }
 

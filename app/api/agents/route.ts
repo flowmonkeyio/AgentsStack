@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@clerk/nextjs/server";
 import { getAgentsCollection } from "@/lib/db";
 import { createLogger, createContext } from "@/lib/logging";
+import { createDiscoveryService } from "@/lib/orchestration/discovery";
+import { nanoid } from "nanoid";
 
 const logger = createLogger("api.agents");
 
@@ -59,24 +61,61 @@ export async function POST(request: NextRequest) {
 
     const agents = await getAgentsCollection();
 
+    // Generate agent_id
+    const agent_id = `agent_${nanoid(12)}`;
+
+    // Generate embedding for discovery (if Voyage AI is available)
+    let capabilities_embedding: number[] | null = null;
+    try {
+      const discoveryService = createDiscoveryService();
+      const embedResult = await discoveryService.embedCapabilities(ctx, capabilities);
+      capabilities_embedding = embedResult.embedding;
+      logger.info(ctx, `operation=embed_capabilities agent=${name} embedding_size=${capabilities_embedding.length}`);
+    } catch (err) {
+      logger.warn(ctx, `operation=embed_capabilities status=failed error="${err instanceof Error ? err.message : "unknown"}" - continuing without embedding`);
+    }
+
+    // Normalize pricing to support both formats
+    const basePrice = pricing?.basePrice ?? pricing?.base_price ?? 0;
+
     const result = await agents.insertOne({
+      agent_id,
       name,
       description,
       capabilities,
       endpoint,
+      url: endpoint, // Alias for dispatch compatibility
       wallet: wallet || "",
-      pricing: pricing || { basePrice: 0, currency: "USDC", negotiable: false },
+      // Pricing - both formats for compatibility
+      pricing: {
+        basePrice,
+        base_price: basePrice,
+        currency: pricing?.currency || "USDC",
+        negotiable: pricing?.negotiable ?? false,
+      },
       status: "pending_review",
+      // Metrics - both formats for compatibility
       metrics: {
         totalJobs: 0,
         successfulJobs: 0,
         failedJobs: 0,
-        averageScore: 0,
+        averageScore: 0.85, // Start with decent score so discovery finds it
         totalEarningsUsd: 0,
         averageExecutionTimeMs: 0,
       },
-      supportsAsync: false,
-      supportsCallback: false,
+      // Stats format for discovery
+      stats: {
+        total_jobs: 0,
+        successful_jobs: 0,
+        avg_score: 0.85, // Start with decent score so discovery finds it
+        jobs_completed: 0,
+      },
+      // Embedding for vector search
+      capabilities_embedding,
+      supportsAsync: true,
+      supports_async: true,
+      supportsCallback: true,
+      supports_callback: true,
       metadata: {},
       createdAt: new Date(),
       updatedAt: new Date(),

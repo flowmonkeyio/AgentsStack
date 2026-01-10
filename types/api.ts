@@ -7,6 +7,9 @@
 
 import type { WorkItemStatus, ReasoningEntry, ActionItem } from "./data";
 
+// Re-export for consumers
+export type { WorkItemStatus };
+
 // =============================================================================
 // REQUEST TYPES
 // =============================================================================

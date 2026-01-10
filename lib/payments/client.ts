@@ -1,15 +1,15 @@
 /**
  * Payment Client Module
  *
- * Main PaymentClient implementation that wraps CDP and x402 SDKs.
+ * Main PaymentClient implementation that wraps CDP SDK.
  *
  * @see /docs/designs/payments/TECH_DESIGN.md
  */
 
 import { RequestContext, createLogger } from "@/lib/logging";
-
-// TODO: Import from @coinbase/cdp-sdk when available
-// import { CoinbaseCDP } from '@coinbase/cdp-sdk';
+import { CdpClient } from "@coinbase/cdp-sdk";
+import { createPublicClient, http } from "viem";
+import { baseSepolia, base } from "viem/chains";
 
 import type {
   PaymentClient,
@@ -20,25 +20,55 @@ import type {
   UserWallet,
 } from "./types";
 import { executePayment } from "./x402";
-import { validateAddress, getBalance as getWalletBalance } from "./wallet";
+import { validateAddress, getBalance as getWalletBalance, type Network } from "./wallet";
 
 const logger = createLogger("payments");
 
 /**
- * PaymentClient implementation that wraps the CDP and x402 SDKs.
+ * Get viem public client for the network.
+ */
+function getPublicClient(network: Network) {
+  const chain = network === "base-mainnet" ? base : baseSepolia;
+  return createPublicClient({
+    chain,
+    transport: http(),
+  });
+}
+
+/**
+ * PaymentClient implementation that wraps the CDP SDK.
  */
 class PaymentClientImpl implements PaymentClient {
   private readonly config: PaymentClientConfig;
-  // TODO: Add CDP SDK instance when available
-  // private readonly cdp: CoinbaseCDP;
+  private cdp: CdpClient | null = null;
 
   constructor(config: PaymentClientConfig) {
     this.config = config;
-    // TODO: Initialize CDP SDK when available
-    // this.cdp = new CoinbaseCDP({
-    //   apiKey: config.cdpApiKey,
-    //   apiSecret: config.cdpApiSecret
-    // });
+  }
+
+  /**
+   * Get or initialize CDP client.
+   */
+  private getCdpClient(ctx: RequestContext): CdpClient {
+    if (!this.cdp) {
+      const apiKeyId = process.env.CDP_API_KEY_ID;
+      const apiKeySecret = process.env.CDP_API_KEY_SECRET;
+      const walletSecret = process.env.CDP_WALLET_SECRET;
+
+      if (!apiKeyId || !apiKeySecret || !walletSecret) {
+        logger.error(ctx, `operation=get_cdp_client status=failed reason=missing_credentials`);
+        throw new Error("CDP credentials not configured");
+      }
+
+      this.cdp = new CdpClient({
+        apiKeyId,
+        apiKeySecret,
+        walletSecret,
+      });
+
+      logger.info(ctx, `operation=get_cdp_client status=initialized`);
+    }
+    return this.cdp;
   }
 
   /**
@@ -70,6 +100,7 @@ class PaymentClientImpl implements PaymentClient {
 
   /**
    * Check the status of a payment by transaction hash.
+   * Uses viem to check transaction receipt on-chain.
    *
    * @param ctx - Request context for tracing
    * @param tx_hash - Blockchain transaction hash
@@ -77,31 +108,47 @@ class PaymentClientImpl implements PaymentClient {
    */
   async getPaymentStatus(ctx: RequestContext, tx_hash: string): Promise<PaymentStatus> {
     logger.info(ctx, `operation=get_payment_status tx_hash=${tx_hash} status=started`);
+
+    // Validate hash format
+    if (!tx_hash.startsWith("0x") || tx_hash.length !== 66) {
+      logger.warn(ctx, `operation=get_payment_status tx_hash=${tx_hash} status=invalid_hash`);
+      return "pending";
+    }
+
     try {
-      // TODO: Implement actual CDP SDK call
-      // const status = await this.cdp.getTransactionStatus(tx_hash);
-      // // Map CDP status to our PaymentStatus
-      // if (status.confirmed) return "confirmed";
-      // if (status.failed) return "failed";
-      // return "processing";
+      const publicClient = getPublicClient(this.config.network);
 
-      // Placeholder: Return simulated status for development
-      logger.warn(ctx, `operation=get_payment_status tx_hash=${tx_hash} status=placeholder`);
+      // Try to get the transaction receipt
+      const receipt = await publicClient.getTransactionReceipt({
+        hash: tx_hash as `0x${string}`,
+      });
 
-      // For development, return confirmed if hash looks valid
-      let result: PaymentStatus;
-      if (tx_hash.startsWith("0x") && tx_hash.length === 66) {
-        result = "confirmed";
-      } else {
-        result = "pending";
+      if (receipt) {
+        if (receipt.status === "success") {
+          logger.info(ctx, `operation=get_payment_status tx_hash=${tx_hash} block=${receipt.blockNumber} result=confirmed`);
+          return "confirmed";
+        } else if (receipt.status === "reverted") {
+          logger.warn(ctx, `operation=get_payment_status tx_hash=${tx_hash} result=failed reason=reverted`);
+          return "failed";
+        }
       }
-      logger.info(ctx, `operation=get_payment_status tx_hash=${tx_hash} result=${result} status=completed`);
-      return result;
+
+      // If no receipt yet, transaction is still pending
+      logger.info(ctx, `operation=get_payment_status tx_hash=${tx_hash} result=pending`);
+      return "pending";
     } catch (error: unknown) {
-      // Transaction not found or network error
+      // Transaction not found (not yet mined) or network error
+      const message = error instanceof Error ? error.message : String(error);
+
+      // If transaction not found, it's still pending/processing
+      if (message.includes("could not be found") || message.includes("not found")) {
+        logger.info(ctx, `operation=get_payment_status tx_hash=${tx_hash} result=processing reason=not_mined_yet`);
+        return "processing";
+      }
+
       logger.error(
         ctx,
-        `operation=get_payment_status tx_hash=${tx_hash} status=error`,
+        `operation=get_payment_status tx_hash=${tx_hash} status=error error="${message}"`,
         error instanceof Error ? error : undefined
       );
       return "pending";
@@ -144,7 +191,7 @@ class PaymentClientImpl implements PaymentClient {
   }
 
   /**
-   * Create an embedded wallet for a user.
+   * Create an embedded wallet for a user using CDP SDK.
    *
    * @param ctx - Request context for tracing
    * @param user_id - User ID to create wallet for
@@ -152,38 +199,38 @@ class PaymentClientImpl implements PaymentClient {
    */
   async createEmbeddedWallet(ctx: RequestContext, user_id: string): Promise<UserWallet> {
     logger.info(ctx, `operation=create_embedded_wallet user_id=${user_id} status=started`);
-    // TODO: Implement actual CDP SDK call
-    // const wallet = await this.cdp.createEmbeddedWallet({
-    //   userId: user_id,
-    //   network: this.config.network
-    // });
-    // return {
-    //   type: "embedded",
-    //   cdp_wallet_id: wallet.id,
-    //   address: wallet.address,
-    //   verified: true  // CDP wallets are auto-verified
-    // };
 
-    // Placeholder: Return simulated wallet for development
-    logger.warn(ctx, `operation=create_embedded_wallet user_id=${user_id} status=placeholder`);
+    try {
+      const cdp = this.getCdpClient(ctx);
 
-    // Generate a simulated wallet address
-    const simulatedAddress = `0x${generateSimulatedAddress()}`;
-    const simulatedWalletId = `wallet_${user_id}_${Date.now()}`;
+      // Create a CDP account with the user ID as the name
+      // CDP SDK manages the wallet creation and key management
+      const account = await cdp.evm.getOrCreateAccount({
+        name: `user_${user_id}`,
+      });
 
-    const wallet: UserWallet = {
-      type: "embedded",
-      cdp_wallet_id: simulatedWalletId,
-      address: simulatedAddress,
-      verified: true, // CDP wallets are auto-verified
-    };
+      const wallet: UserWallet = {
+        type: "embedded",
+        cdp_wallet_id: `user_${user_id}`,
+        address: account.address,
+        verified: true, // CDP wallets are auto-verified
+      };
 
-    logger.info(
-      ctx,
-      `operation=create_embedded_wallet user_id=${user_id} wallet_id=${simulatedWalletId} address=${simulatedAddress} status=completed`
-    );
+      logger.info(
+        ctx,
+        `operation=create_embedded_wallet user_id=${user_id} address=${account.address} status=completed`
+      );
 
-    return wallet;
+      return wallet;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.error(
+        ctx,
+        `operation=create_embedded_wallet user_id=${user_id} status=failed error="${message}"`,
+        error instanceof Error ? error : undefined
+      );
+      throw error;
+    }
   }
 }
 
@@ -265,16 +312,3 @@ export function resetPaymentClient(ctx: RequestContext): void {
 // HELPER FUNCTIONS
 // =============================================================================
 
-/**
- * Generate a simulated wallet address for development.
- *
- * @returns 40-character hex string (without 0x prefix)
- */
-function generateSimulatedAddress(): string {
-  const chars = "0123456789abcdef";
-  let result = "";
-  for (let i = 0; i < 40; i++) {
-    result += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return result;
-}

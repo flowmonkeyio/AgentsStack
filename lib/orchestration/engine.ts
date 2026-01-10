@@ -594,7 +594,7 @@ export class OrchestrationEngine {
       }
     };
 
-    subscribeToEvents(handler);
+    subscribeToEvents(ctx, handler);
 
     logger.debug(ctx, "operation=setup_event_bridge status=complete");
   }
@@ -602,17 +602,41 @@ export class OrchestrationEngine {
   /**
    * Recover in-flight work on startup
    *
-   * Note: Full recovery requires complex dependency wiring (WorkLifecycle, etc.)
-   * For now, we just log that recovery would happen. In production, this would
-   * call recoverInFlightWork with all required dependencies.
+   * Finds all jobs in active states (planning, plan_verification, executing)
+   * and resumes them using the checkpointed graph mechanism.
    */
   private async recoverOnStartup(ctx: RequestContext): Promise<void> {
     try {
-      // TODO: Wire up full recovery with RecoveryDependencies
-      // const db = getDatabaseClient();
-      // await recoverInFlightWork(ctx, dependencies);
+      const db = getDatabaseClient();
 
-      logger.info(ctx, "operation=recover_on_startup status=skipped reason=dependencies_not_wired");
+      // Find all active jobs that need recovery
+      const activeJobs = await db.getJobsByStatus(ctx, [
+        "planning",
+        "plan_verification",
+        "executing",
+      ]);
+
+      if (activeJobs.length === 0) {
+        logger.info(ctx, "operation=recover_on_startup status=complete active_jobs=0");
+        return;
+      }
+
+      logger.info(ctx, `operation=recover_on_startup status=starting active_jobs=${activeJobs.length}`);
+
+      // Recover each job asynchronously
+      for (const job of activeJobs) {
+        try {
+          logger.info(ctx, `operation=recover_job job_id=${job.job_id} status=${job.status}`);
+          // Don't await - let jobs recover in parallel
+          this.recoverJob(ctx, job.job_id).catch((error) => {
+            logger.error(ctx, `operation=recover_job job_id=${job.job_id} status=failed`, error instanceof Error ? error : undefined);
+          });
+        } catch (error) {
+          logger.error(ctx, `operation=recover_job job_id=${job.job_id} status=failed`, error instanceof Error ? error : undefined);
+        }
+      }
+
+      logger.info(ctx, `operation=recover_on_startup status=initiated jobs_queued=${activeJobs.length}`);
     } catch (error) {
       // Don't fail startup for recovery errors
       logger.error(ctx, "operation=recover_on_startup status=failed", error instanceof Error ? error : undefined);

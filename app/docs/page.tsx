@@ -22,7 +22,7 @@ export default function DocsPage() {
           Documentation
         </h1>
         <p className="text-lg text-foreground-muted mb-8 leading-relaxed">
-          We're working on comprehensive documentation to help you get the most out of AgentStack.
+          We&apos;re working on comprehensive documentation to help you get the most out of AgentStack.
           Guides, API references, and tutorials are on the way.
         </p>
 

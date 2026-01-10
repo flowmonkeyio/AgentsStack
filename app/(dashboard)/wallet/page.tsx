@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
+import { Breadcrumb } from "@/components/layout";
 
 interface AssetBalance {
   asset: "ETH" | "USDC";
@@ -221,7 +222,10 @@ export default function WalletPage() {
   const totalValue = ethUsdValue + usdcValue;
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-8">
+      {/* Breadcrumb */}
+      <Breadcrumb items={[{ label: "Wallet" }]} />
+
       {/* 3-Card Grid Layout */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
 
