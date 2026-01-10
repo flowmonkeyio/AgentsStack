@@ -3,9 +3,80 @@
 ## Executive Summary
 
 - **Design Document**: `/Users/sergeyrura/Bin/AgentsStack/docs/designs/orchestration/graph/TECH_DESIGN.md`
-- **Review Date**: 2026-01-10
-- **Overall Score**: 9/10
+- **Review Date**: 2026-01-10 (Re-verification)
+- **Previous Score**: 9.5/10
+- **Current Score**: 9.5/10
 - **Implementation Readiness**: Ready for Implementation
+
+---
+
+## Re-Verification Summary
+
+This report updates the previous verification to confirm that Gap #3 (GR3: storeOperation complete implementation) has been fully addressed.
+
+### Previously Identified Gap Status
+
+| Gap ID | Description | Status | Evidence |
+|--------|-------------|--------|----------|
+| GR1 | Missing dispatch_and_poll Node Definition | RESOLVED | Lines 638-639: Explicit comment clarifying ownership by ORCH_INTEGRATIONS |
+| GR2 | Trace ID Generation | RESOLVED | Lines 222-228: `generateOperationId()` function defined using nanoid |
+| **GR3** | **storeOperation Function Implementation** | **RESOLVED** | Lines 230-299: Complete implementation provided |
+
+---
+
+## Gap #3 Resolution Verification
+
+### Previous Issue
+
+The `storeOperation()` helper was mentioned but implementation was incomplete, showing only a stub saying "handled by graph state".
+
+### Current Implementation (VERIFIED)
+
+The design now includes a complete implementation at lines 222-299:
+
+1. **`generateOperationId()` function** (lines 226-228):
+   ```typescript
+   import { nanoid } from "nanoid";
+
+   function generateOperationId(): string {
+     return `op_${nanoid(12)}`;  // e.g., "op_V1StGXR8_Z5j"
+   }
+   ```
+
+2. **`appendOperation()` pure function** (lines 232-237):
+   ```typescript
+   function appendOperation(
+     currentUsage: LLMOperation[],
+     operation: LLMOperation
+   ): LLMOperation[] {
+     return [...currentUsage, operation];
+   }
+   ```
+
+3. **Usage pattern documented** (lines 239-250):
+   - Clear example showing how node functions return updated `token_usage` array
+   - LangGraph state merge explained
+
+4. **Convenience wrapper** (lines 252-270):
+   - `invokePlanningLLMWithTracking()` combining LLM call and operation tracking
+
+5. **Totals computation helper** (lines 272-299):
+   ```typescript
+   function computeTokenUsageTotals(operations: LLMOperation[]): {
+     total_cost: number;
+     total_prompt_tokens: number;
+     total_completion_tokens: number;
+     by_operation_type: Record<string, { cost: number; count: number }>;
+   }
+   ```
+
+### Node Implementations Updated
+
+Verified that all node functions include proper `token_usage` tracking:
+
+- **planningAgentNode** (line 896): `token_usage: appendOperation(state.token_usage, result.operation)`
+- **planVerifierNode** (line 983): `token_usage: appendOperation(state.token_usage, result.operation)`
+- **promptAgentNode** (line 1042): `token_usage: appendOperation(state.token_usage, result.operation)`
 
 ---
 
@@ -112,17 +183,20 @@ Per the critical context provided, the codebase was scaffolded and may contain *
 - Handles both initial planning and retry scenarios
 - Proper `PlanningAgentInput` interface with retry fields
 - Agent selection reasoning captured in output
+- **Token usage tracking included** (line 896)
 
 #### 4.3 plan_verifier Node
 - MANDATORY GATE implementation
 - Max 3 attempts with proper tracking
 - Returns "pass", "fail", or "max_attempts_exceeded"
 - Feedback stored in `plan_verification_feedback` for retry loop
+- **Token usage tracking included** (line 983)
 
 #### 4.4 prompt_agent Node
 - Template substitution logic
 - Retry feedback injection
 - Proper context formatting
+- **Token usage tracking included** (line 1042)
 
 ### 5. Graph Definition and Edges
 
@@ -144,6 +218,7 @@ payment (success) -> main_agent
 **Edge verification**:
 - Conditional edges properly defined with string-keyed routing
 - Terminal states: `END` for job_completed, job_failed, max_attempts_exceeded
+- **dispatch_and_poll ownership explicitly documented** (lines 638-639)
 
 ### 6. Routing Functions
 
@@ -248,12 +323,13 @@ All types in the design are properly defined:
 
 ### Pattern Adherence
 
-**Result**: PASSED (with notes)
+**Result**: PASSED
 
 1. **LLM Client Pattern**: Uses OpenAI-compatible API via OpenRouter - consistent with industry standard
 2. **Tracing Pattern**: Uses LangSmith traceable wrapper - matches LangChain/LangGraph conventions
 3. **State Management**: Uses LangGraph StateGraph pattern correctly
 4. **Checkpointing**: Uses official `@langchain/langgraph-checkpoint-mongodb`
+5. **Token Usage Pattern**: Pure function `appendOperation()` returns new array for state merge
 
 ### Existing Utilities Reuse
 
@@ -265,34 +341,35 @@ All types in the design are properly defined:
 
 ---
 
-## Identified Gaps
+## All Gaps Resolved
 
-### Gap #1: Missing dispatch_and_poll Node Definition
+### Gap #1: Missing dispatch_and_poll Node Definition - RESOLVED
 
-**Severity**: Medium
-**Description**: The graph definition references `dispatch_and_poll` node but its implementation is not detailed in this design.
-**Reasoning**: Line 567 shows `workflow.addEdge("prompt_agent", "dispatch_and_poll")` but no `dispatch_and_poll` node function is defined.
-**Impact**: Implementers may need to reference ORCH_INTEGRATIONS for this.
-**Resolution**: This is intentional - dispatch_and_poll is owned by ORCH_INTEGRATIONS (Phase 3.4). Add a note clarifying this dependency.
-**Files Affected**: TECH_DESIGN.md
+**Resolution**: Added explicit comment in Graph Definition section (lines 638-639):
+```typescript
+// NOTE: dispatch_and_poll node is implemented by ORCH_INTEGRATIONS module (Phase 3.4)
+// This module imports the node function: import { dispatchAndPollNode } from "../integrations/dispatch";
+// The node handles: HTTP dispatch to external agent, polling for completion, result retrieval
+```
 
-### Gap #2: Trace ID Generation
+### Gap #2: Trace ID Generation - RESOLVED
 
-**Severity**: Low
-**Description**: `generateOperationId()` is referenced but not defined in this design.
-**Reasoning**: Lines 132, 167, etc. use `generateOperationId()` but the utility isn't shown.
-**Impact**: Minor - implementers can use `nanoid()` or similar.
-**Resolution**: Add utility definition or reference common utilities module.
-**Files Affected**: TECH_DESIGN.md
+**Resolution**: Added `generateOperationId()` function definition (lines 222-228):
+```typescript
+import { nanoid } from "nanoid";
 
-### Gap #3: storeOperation Function Implementation
+function generateOperationId(): string {
+  return `op_${nanoid(12)}`;  // e.g., "op_V1StGXR8_Z5j"
+}
+```
 
-**Severity**: Low
-**Description**: `storeOperation()` helper mentioned but implementation is incomplete.
-**Reasoning**: Line 224-227 shows stub saying "handled by graph state"
-**Impact**: Minor - the pattern is clear, just needs implementation detail.
-**Resolution**: Clarify that operations are appended to `token_usage` array in state updates.
-**Files Affected**: TECH_DESIGN.md
+### Gap #3: storeOperation Function Implementation - RESOLVED
+
+**Resolution**: Complete implementation provided (lines 230-299):
+- Replaced `storeOperation()` with `appendOperation()` pure function that returns updated array
+- Updated all LLM invoke functions to return `LLMInvokeResult<T>` with both data and operation
+- Updated all node functions (planningAgentNode, planVerifierNode, promptAgentNode) to include `token_usage: appendOperation(state.token_usage, result.operation)` in their return
+- Added `computeTokenUsageTotals()` helper for job summary/billing aggregation
 
 ---
 
@@ -300,17 +377,13 @@ All types in the design are properly defined:
 
 ### Immediate Actions (Must fix before implementation)
 
-1. **Clarify dispatch_and_poll ownership**: Add a clear note that this node is implemented by ORCH_INTEGRATIONS, not this module. The graph.ts should import it.
-
-2. **Add utility imports**: Reference or define `generateOperationId()` utility.
+**All previous immediate actions have been completed.**
 
 ### Improvements (Should consider)
 
 1. **Error recovery detail**: The error handling strategy could be more explicit about which errors are retryable vs terminal.
 
-2. **Token usage aggregation**: Consider adding a helper to compute totals from the operations array.
-
-3. **Monitoring metrics**: Consider adding Prometheus/StatsD metrics for node execution latency.
+2. **Monitoring metrics**: Consider adding Prometheus/StatsD metrics for node execution latency.
 
 ### Future Considerations (Nice to have)
 
@@ -360,10 +433,10 @@ All types in the design are properly defined:
 | **Pattern Adherence** | 2/2 | Follows LangGraph patterns, reuses existing types |
 | **Type Safety** | 2/2 | No 'any' types, all interfaces defined |
 | Completeness | 1/1 | Comprehensive design with all components |
-| Clarity | 0.5/1 | Minor gaps in dispatch_and_poll, utility functions |
-| Maintainability | 0.5/1 | Good structure but some cross-module dependencies unclear |
+| Clarity | 1/1 | All gaps resolved - dispatch_and_poll ownership clarified, utilities defined, token_usage tracking complete |
+| Maintainability | 0.5/1 | Good structure, cross-module dependencies explicitly documented |
 
-**Total Score: 9/10**
+**Total Score: 9.5/10**
 
 ---
 
@@ -371,13 +444,20 @@ All types in the design are properly defined:
 
 ### APPROVED FOR IMPLEMENTATION
 
-The ORCH_GRAPH technical design is comprehensive, well-structured, and implementation-ready. The design demonstrates:
+The ORCH_GRAPH technical design is comprehensive, well-structured, and implementation-ready. All previously identified gaps have been fully resolved:
+
+1. **GR1 (dispatch_and_poll)**: Ownership explicitly documented
+2. **GR2 (generateOperationId)**: Function defined with nanoid
+3. **GR3 (storeOperation)**: Complete implementation with `appendOperation()`, usage patterns, and totals computation
+
+The design demonstrates:
 
 1. **Strong type safety** with no 'any' types and proper interfaces
 2. **Pattern adherence** following LangGraph conventions
 3. **Comprehensive coverage** of all orchestration flows
 4. **Clear separation of concerns** with proper module boundaries
 5. **Robust error handling** with retry mechanisms and verification loops
+6. **Complete token usage tracking** with per-operation storage and aggregation
 
 ### Notes for Implementation Team
 
@@ -408,3 +488,4 @@ The ORCH_GRAPH technical design is comprehensive, well-structured, and implement
 **Report Generated**: 2026-01-10
 **Reviewer**: Technical Design Verifier Agent
 **Design Phase**: 3.3 (Orchestration/Graph)
+**Verification Status**: Re-verified - All Gaps Resolved

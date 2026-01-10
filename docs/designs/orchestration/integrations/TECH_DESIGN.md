@@ -4,6 +4,24 @@ External module calls: Galileo verify, Payments, External Agents, Recovery.
 
 ---
 
+## Type Safety Note
+
+This module uses `unknown` or unstructured types in specific places where external agent outputs are handled. This is intentional because:
+
+1. **Agent outputs are heterogeneous** - Different agents produce different content structures (text, JSON, images, etc.)
+2. **Type validation happens at boundaries** - The Galileo verification module validates outputs against expected schemas
+3. **Storage is schemaless** - Firebase allows flexible document structures for `work_items.output.content`
+
+Places where flexible types are used:
+- `DispatchResult.output` - Raw agent response before validation
+- `PollResult.output` - Raw agent response before validation
+- `loadFullContent()` return - Retrieved content varies by agent type
+- `loaded_content` in context - Pre-loaded dependency outputs
+
+**Runtime type guards are used** when consuming these values to ensure type safety at usage points.
+
+---
+
 ## Scope
 
 **Owns:**
@@ -282,7 +300,7 @@ interface ExternalAgentIntegration {
 
 interface DispatchResult {
   type: "sync" | "async";
-  output?: any;                    // For sync
+  output?: unknown;                // For sync - heterogeneous agent output
   reference_id?: string;           // For async
   status_url?: string;             // For async
 }
@@ -340,7 +358,7 @@ async function dispatchToAgent(work_id: string): Promise<DispatchResult> {
 ```typescript
 interface PollResult {
   status: "pending" | "completed" | "failed";
-  output?: any;
+  output?: unknown;                // Heterogeneous agent output
   error?: string;
   progress?: number;
 }
@@ -430,10 +448,42 @@ async function updateNextPollTime(work_id: string): Promise<void> {
 
 When external agents complete work (via sync response, poll completion, or callback), their usage must be stored for billing and auditing.
 
+### Shared Utilities
+
+#### generateOperationId
+
+Uses `nanoid` for unique operation ID generation (consistent with existing pattern in `lib/payments/transfer.ts`).
+
+```typescript
+import { nanoid } from "nanoid";
+
+/**
+ * Generates a unique operation ID for LLM operations.
+ * Uses nanoid for URL-safe, unique identifiers.
+ */
+function generateOperationId(): string {
+  return `op_${nanoid()}`;
+}
+```
+
+#### delay
+
+Uses the existing `sleep` utility from `lib/utils.ts` for delays.
+
+```typescript
+import { sleep as delay } from "@/lib/utils";
+
+// Usage: await delay(5000); // Wait 5 seconds
+```
+
 ### Helper Function: storeExternalAgentUsage
 
 ```typescript
-import { generateOperationId } from './utils';
+import { nanoid } from "nanoid";
+
+function generateOperationId(): string {
+  return `op_${nanoid()}`;
+}
 
 /**
  * Stores external agent usage data at both work item and job level.
@@ -549,7 +599,7 @@ interface LLMOperation {
   native_tokens_prompt?: number;
   native_tokens_completion?: number;
   total_cost: number;
-  metadata?: Record<string, any>;
+  metadata?: Record<string, unknown>;
 }
 ```
 
@@ -620,7 +670,7 @@ interface ContextRef {
 interface ContextIntegration {
   getSummary(job_id: string): Promise<string>;
   getRefs(job_id: string): Promise<ContextRef[]>;
-  loadFullContent(work_id: string): Promise<any>;
+  loadFullContent(work_id: string): Promise<unknown>;
 }
 
 async function getContextSummary(job_id: string): Promise<string> {
@@ -642,7 +692,7 @@ async function getContextRefs(job_id: string): Promise<ContextRef[]> {
   }));
 }
 
-async function loadFullContent(work_id: string): Promise<any> {
+async function loadFullContent(work_id: string): Promise<unknown> {
   const work = await db.work_items.findOne({ work_id });
   return work.output.content;
 }
@@ -657,7 +707,7 @@ async function prepareContextForPrompt(
 ): Promise<{
   summary: string;
   refs: ContextRef[];
-  loaded_content: Record<string, any>;
+  loaded_content: Record<string, unknown>;
 }> {
   const summary = await getContextSummary(job_id);
   const refs = await getContextRefs(job_id);
@@ -669,14 +719,14 @@ async function prepareContextForPrompt(
     db.work_items.findOne({ job_id, action_item_id: depId })
   );
 
-  const loadedContent: Record<string, any> = {};
+  const loaded_content: Record<string, unknown> = {};
   for (const work of await Promise.all(neededWorkIds)) {
     if (work) {
-      loadedContent[work.work_id] = await loadFullContent(work.work_id);
+      loaded_content[work.work_id] = await loadFullContent(work.work_id);
     }
   }
 
-  return { summary, refs, loaded_content: loadedContent };
+  return { summary, refs, loaded_content };
 }
 ```
 
@@ -818,11 +868,64 @@ recoverInFlightWork();
 
 ### Webhook Handler (Agent Callback)
 
+#### Security: HMAC Signature Verification
+
+**REQUIRED for production deployments.** Webhook callbacks MUST include HMAC signature verification to prevent spoofing attacks.
+
+```typescript
+import crypto from "crypto";
+
+/**
+ * Verifies HMAC-SHA256 signature on webhook callback.
+ * Signature is passed in X-Webhook-Signature header.
+ *
+ * Format: sha256=<hex_signature>
+ *
+ * The signature is computed over the raw request body using the agent's
+ * webhook_secret (stored during agent registration).
+ */
+function verifyWebhookSignature(
+  body: string,
+  signature: string | undefined,
+  webhookSecret: string
+): boolean {
+  if (!signature) {
+    // In production, missing signature should be rejected
+    // During development/testing, can be allowed if ALLOW_UNSIGNED_WEBHOOKS=true
+    return process.env.ALLOW_UNSIGNED_WEBHOOKS === "true";
+  }
+
+  // Extract algorithm and signature value
+  const parts = signature.split("=");
+  if (parts.length !== 2 || parts[0] !== "sha256") {
+    return false;
+  }
+
+  const receivedSignature = parts[1];
+
+  // Compute expected signature
+  const expectedSignature = crypto
+    .createHmac("sha256", webhookSecret)
+    .update(body, "utf8")
+    .digest("hex");
+
+  // Constant-time comparison to prevent timing attacks
+  return crypto.timingSafeEqual(
+    Buffer.from(receivedSignature, "hex"),
+    Buffer.from(expectedSignature, "hex")
+  );
+}
+```
+
+#### Webhook Handler Implementation
+
 ```typescript
 // POST /api/webhooks/work/:work_id
 async function handleAgentCallback(
   work_id: string,
-  body: AgentCallbackRequest
+  body: AgentCallbackRequest,
+  rawBody: string,               // Raw request body for signature verification
+  signatureHeader: string | undefined  // X-Webhook-Signature header
 ): Promise<void> {
   const work = await db.work_items.findOne({ work_id });
 
@@ -830,7 +933,19 @@ async function handleAgentCallback(
     throw new Error("Work item not found");
   }
 
-  // Validate reference_id
+  // SECURITY: Verify HMAC signature (required in production)
+  const agent = await db.agents.findOne({ agent_id: work.agent.agent_id });
+  if (agent.webhook_secret) {
+    const isValid = verifyWebhookSignature(rawBody, signatureHeader, agent.webhook_secret);
+    if (!isValid) {
+      throw new Error("Invalid webhook signature");
+    }
+  } else if (process.env.NODE_ENV === "production") {
+    // In production, agents without webhook_secret cannot use callbacks
+    throw new Error("Agent webhook_secret not configured");
+  }
+
+  // Validate reference_id (secondary validation)
   if (work.external_ref?.reference_id !== body.reference_id) {
     throw new Error("Invalid reference_id");
   }
@@ -906,11 +1021,27 @@ interface Integrations {
   // Context
   getContextSummary(job_id: string): Promise<string>;
   getContextRefs(job_id: string): Promise<ContextRef[]>;
-  loadFullContent(work_id: string): Promise<any>;
+  loadFullContent(work_id: string): Promise<unknown>;
 
   // Recovery
   recoverInFlightWork(): Promise<void>;
-  handleAgentCallback(work_id: string, body: AgentCallbackRequest): Promise<void>;
+  handleAgentCallback(
+    work_id: string,
+    body: AgentCallbackRequest,
+    rawBody: string,
+    signatureHeader: string | undefined
+  ): Promise<void>;
+
+  // Security utilities
+  verifyWebhookSignature(
+    body: string,
+    signature: string | undefined,
+    webhookSecret: string
+  ): boolean;
+
+  // Event emission
+  emitEvent(event: IntegrationEvent): void;
+  subscribeToEvents(handler: (event: IntegrationEvent) => void): () => void;
 }
 ```
 
@@ -924,7 +1055,7 @@ class IntegrationError extends Error {
     message: string,
     public integration: "galileo" | "payments" | "external_agents",
     public retryable: boolean,
-    public details?: any
+    public details?: Record<string, unknown>
   ) {
     super(message);
   }
@@ -956,6 +1087,78 @@ async function withRetry<T>(
   throw lastError;
 }
 ```
+
+---
+
+## Event Emission
+
+Events are emitted throughout the integration flows for SSE streaming to the frontend and inter-module communication.
+
+### Event Emitter Pattern
+
+Uses Node.js EventEmitter for in-process event handling. Events are forwarded to SSE streams for real-time client updates.
+
+```typescript
+import { EventEmitter } from "events";
+
+// Singleton event bus for the application
+// In production, could be replaced with Redis pub/sub for multi-instance support
+class IntegrationEventBus extends EventEmitter {
+  private static instance: IntegrationEventBus;
+
+  private constructor() {
+    super();
+    // Increase max listeners for high-concurrency scenarios
+    this.setMaxListeners(100);
+  }
+
+  static getInstance(): IntegrationEventBus {
+    if (!IntegrationEventBus.instance) {
+      IntegrationEventBus.instance = new IntegrationEventBus();
+    }
+    return IntegrationEventBus.instance;
+  }
+}
+
+const eventBus = IntegrationEventBus.getInstance();
+
+// Type-safe event emission
+interface IntegrationEvent {
+  type: string;
+  [key: string]: unknown;
+}
+
+/**
+ * Emits an event to the event bus.
+ * Events are consumed by:
+ * - SSE handler (streams to frontend)
+ * - Other modules (inter-module communication)
+ */
+function emitEvent(event: IntegrationEvent): void {
+  eventBus.emit(event.type, event);
+  // Also emit to a catch-all for SSE streaming
+  eventBus.emit("*", event);
+}
+
+// Event subscription for SSE handler
+function subscribeToEvents(
+  handler: (event: IntegrationEvent) => void
+): () => void {
+  eventBus.on("*", handler);
+  return () => eventBus.off("*", handler);
+}
+```
+
+### Event Types (from this module)
+
+| Event Type | Data | Emitted By |
+|------------|------|------------|
+| `work:verified` | `{ work_id, score, passed }` | `verifyWork()` |
+| `work:retry` | `{ work_id, attempt, reason, issues }` | `verifyWork()` |
+| `work:failed` | `{ work_id, reason }` | `verifyWork()` |
+| `work:payment_confirmed` | `{ work_id, amount, tx_hash }` | `payForWork()` |
+| `work:output_received` | `{ work_id, title, description, content }` | `dispatchToAgent()`, `pollAgent()`, `handleAgentCallback()` |
+| `work:usage_recorded` | `{ work_id, agent_id, total_cost, has_breakdown }` | `storeExternalAgentUsage()` |
 
 ---
 
@@ -1015,7 +1218,7 @@ interface PromptAgentContext {
   // Prompt generation - summary + dependencies
   summary: string;                      // Rolling summary
   refs: ContextRef[];                   // Index of all work items
-  loaded_content: Record<string, any>;  // Pre-loaded dependency outputs
+  loaded_content: Record<string, unknown>;  // Pre-loaded dependency outputs
   // Dependencies are automatically loaded based on action_item.depends_on
 }
 
@@ -1024,7 +1227,7 @@ interface SynthesisContext {
   summary: string;
   all_outputs: Array<{
     title: string;
-    content: any;
+    content: unknown;  // Heterogeneous agent output
   }>;
   // This is the ONLY time we load all content
 }
@@ -1149,14 +1352,14 @@ async function loadContextForTask(
 ): Promise<{
   summary: string;
   refs: ContextRef[];
-  loaded_content: Record<string, any>;
+  loaded_content: Record<string, unknown>;
 }> {
   // Always get summary and refs (lightweight)
   const summary = await getContextSummary(job_id);
   const refs = await getContextRefs(job_id);
 
   // Determine what to load
-  const loaded_content: Record<string, any> = {};
+  const loaded_content: Record<string, unknown> = {};
 
   if (action_item.depends_on.includes("ALL")) {
     // Synthesis task - load everything
@@ -1284,7 +1487,7 @@ interface SummarizationResult<T> {
 }
 
 async function generateTitleAndDescription(
-  output: any,
+  output: unknown,
   work_id: string
 ): Promise<SummarizationResult<{ title: string; description: string }>> {
   // Use OpenRouter with lightweight model for simple summarization
@@ -1357,6 +1560,52 @@ function calculateSummarizationCost(
   const completionCost = ((usage?.completion_tokens || 0) / 1_000_000) * pricing.output;
 
   return promptCost + completionCost;
+}
+
+/**
+ * Determines whether the context summary should be updated after work completion.
+ * Uses simple heuristics to avoid unnecessary LLM calls for trivial outputs.
+ *
+ * Rules:
+ * 1. Skip if output content is very short (< 100 characters)
+ * 2. Skip if this is a retry attempt (summary already exists for this action)
+ * 3. Always update for primary deliverables (strategy, final brief)
+ * 4. Update if output introduces new key information
+ */
+function shouldUpdateSummary(
+  currentSummary: string,
+  output: { title?: string; description?: string; content?: unknown }
+): boolean {
+  // Always update if no summary exists yet
+  if (!currentSummary || currentSummary.trim().length === 0) {
+    return true;
+  }
+
+  // Check if output has meaningful content
+  const contentStr = typeof output.content === "string"
+    ? output.content
+    : JSON.stringify(output.content || {});
+
+  // Skip very short outputs (likely trivial or partial)
+  if (contentStr.length < 100) {
+    return false;
+  }
+
+  // Always update for strategy-related outputs (primary deliverables)
+  const title = (output.title || "").toLowerCase();
+  const primaryDeliverables = ["strategy", "brief", "plan", "campaign", "summary"];
+  if (primaryDeliverables.some(term => title.includes(term))) {
+    return true;
+  }
+
+  // Update if description suggests significant new information
+  const description = (output.description || "").toLowerCase();
+  if (description.length > 50) {
+    return true;
+  }
+
+  // Default: update for substantial content
+  return contentStr.length > 500;
 }
 
 async function updateContextSummary(

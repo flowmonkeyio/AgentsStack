@@ -3,10 +3,23 @@
 ## Executive Summary
 
 - **Design Document**: `/Users/sergeyrura/Bin/AgentsStack/docs/designs/api/TECH_DESIGN.md`
-- **Review Date**: 2026-01-10
+- **Review Date**: 2026-01-10 (Re-verification)
 - **Phase**: 4.1 (Interface Layer)
-- **Overall Score**: 7/10
-- **Implementation Readiness**: Needs Revision
+- **Overall Score**: 9.5/10
+- **Implementation Readiness**: APPROVED FOR IMPLEMENTATION
+
+---
+
+## Re-verification Context
+
+This is a re-verification of the API module design following revisions to address previously identified gaps:
+
+| Previous Gap | Status | Resolution |
+|--------------|--------|------------|
+| A2: Router style mismatch | RESOLVED | SSE example now uses App Router pattern (lines 762-834) |
+| A3: Missing file structure | RESOLVED | Authoritative directory structure defined (lines 24-56) |
+| A6: Rate limiting unspecified | RESOLVED | Full implementation specified (lines 619-755) |
+| A1: `any` types | RESOLVED | Uses `unknown` with clear documentation |
 
 ---
 
@@ -27,15 +40,16 @@ This verification applies the following constraints:
 
 | Flow/Endpoint | Covered in TECH_DESIGN.md | Components Specified | Status |
 |---------------|---------------------------|---------------------|--------|
-| POST /api/jobs | YES | Request/Response types, validation, auth | COMPLETE |
+| POST /api/jobs | YES | Request/Response types, validation, auth, rate limit | COMPLETE |
 | GET /api/jobs/:job_id | YES | Response structure, full state | COMPLETE |
 | GET /api/jobs/:job_id/work/:work_id | YES | Lazy loading pattern | COMPLETE |
 | POST /api/jobs/:job_id/continue | YES | Request/Response, version flow | COMPLETE |
-| GET /api/jobs/:job_id/stream | YES | SSE headers, event types, heartbeat | COMPLETE |
+| GET /api/jobs/:job_id/stream | YES | SSE headers, event types, heartbeat, App Router | COMPLETE |
 | POST /api/webhooks/work/:work_id | YES | Callback handling, security | COMPLETE |
-| Authentication middleware | YES | JWT pattern, AuthenticatedRequest | COMPLETE |
+| Authentication middleware | YES | Clerk integration pattern | COMPLETE |
 | Error handling | YES | ErrorResponse type, HTTP codes | COMPLETE |
-| Rate limiting | YES | Per-endpoint limits | NOTED (not code-specified) |
+| Rate limiting | YES | Full implementation with code | COMPLETE |
+| Request validation | YES | Zod schemas specified | COMPLETE |
 
 **Flow Coverage Result**: All flows are fully specified in TECH_DESIGN.md.
 
@@ -43,292 +57,298 @@ This verification applies the following constraints:
 
 ## Detailed Verification Results
 
-### 1. REST Endpoints Specification
+### 1. Directory Structure (NEW - Gap A3 Resolved)
 
-#### 1.1 POST /api/jobs
-**Description**: Create a new job
+**Description**: Authoritative file structure for implementation
 **Result**: VERIFIED
-**Files Reviewed**: TECH_DESIGN.md lines 61-108
-**Finding**: Complete specification with proper TypeScript interfaces for request/response. The `CreateJobRequest` and `CreateJobResponse` interfaces are well-defined. Integration with OrchestrationEngine.startJob() is specified.
+**Files Reviewed**: TECH_DESIGN.md lines 24-82
+**Finding**: The design now includes a complete, authoritative directory structure:
 
-#### 1.2 GET /api/jobs/:job_id
-**Description**: Get job details and current state
-**Result**: VERIFIED
-**Files Reviewed**: TECH_DESIGN.md lines 112-169
-**Finding**: Comprehensive `GetJobResponse` interface covering all job state including action_items, work_items, versions, and reasoning_log. Properly aligned with Core Data Structure types.
+```
+app/api/jobs/route.ts
+app/api/jobs/[id]/route.ts
+app/api/jobs/[id]/continue/route.ts
+app/api/jobs/[id]/stream/route.ts
+app/api/jobs/[id]/work/[workId]/route.ts
+app/api/webhooks/work/[workId]/route.ts
+lib/api/rate-limit.ts (NEW)
+lib/api/validation.ts (NEW)
+types/api.ts (NEW)
+```
 
-#### 1.3 GET /api/jobs/:job_id/work/:work_id
-**Description**: Get full work item output (lazy loading)
-**Result**: VERIFIED
-**Files Reviewed**: TECH_DESIGN.md lines 173-207
-**Finding**: `GetWorkItemResponse` interface properly implements lazy loading pattern with full content. Includes verification and payment status.
+The design explicitly states: "This design is the source of truth - existing scaffolded code that differs must be replaced."
 
-#### 1.4 POST /api/jobs/:job_id/continue
-**Description**: Continue job with user feedback
-**Result**: VERIFIED
-**Files Reviewed**: TECH_DESIGN.md lines 211-250
-**Finding**: Clear continuation flow with version increment. Properly references OrchestrationEngine.continueJob().
+### 2. REST Endpoints Specification
 
-#### 1.5 GET /api/jobs/:job_id/stream (SSE)
-**Description**: Real-time updates via Server-Sent Events
+#### 2.1 POST /api/jobs
 **Result**: VERIFIED
-**Files Reviewed**: TECH_DESIGN.md lines 253-341
-**Finding**: Comprehensive event type specification covering job lifecycle, work item lifecycle, dynamic spawning, reasoning, and heartbeat. Proper SSE headers specified.
+**Files Reviewed**: TECH_DESIGN.md lines 120-169
+**Finding**: Complete specification with proper TypeScript interfaces. Full route handler implementation provided (lines 908-998).
 
-#### 1.6 POST /api/webhooks/work/:work_id
-**Description**: Agent callback endpoint
+#### 2.2 GET /api/jobs/:job_id
 **Result**: VERIFIED
-**Files Reviewed**: TECH_DESIGN.md lines 344-393
-**Finding**: `AgentCallbackRequest` and `AgentCallbackResponse` properly defined. Security note about reference_id validation and optional HMAC.
+**Files Reviewed**: TECH_DESIGN.md lines 173-229
+**Finding**: Comprehensive `GetJobResponse` interface with all required fields.
+
+#### 2.3 GET /api/jobs/:job_id/work/:work_id
+**Result**: VERIFIED
+**Files Reviewed**: TECH_DESIGN.md lines 234-268
+**Finding**: Proper lazy loading pattern implemented.
+
+#### 2.4 POST /api/jobs/:job_id/continue
+**Result**: VERIFIED
+**Files Reviewed**: TECH_DESIGN.md lines 272-310
+**Finding**: Clear continuation flow with version increment.
+
+#### 2.5 GET /api/jobs/:job_id/stream (SSE) - Gap A2 Resolved
+**Result**: VERIFIED
+**Files Reviewed**: TECH_DESIGN.md lines 314-401, 762-856
+**Finding**: SSE implementation now correctly uses **App Router pattern**:
+- Uses `{ params }: { params: Promise<{ id: string }> }` signature
+- Proper Clerk auth integration with `await auth()`
+- Uses `getDatabaseClient()` (not raw collections)
+- Includes heartbeat, cleanup on `request.signal.addEventListener("abort", ...)`
+- Full event type specification with 17 distinct event types
+
+**Previous Issue**: Used Pages Router style
+**Resolution**: Lines 762-834 show correct App Router implementation
+
+#### 2.6 POST /api/webhooks/work/:work_id
+**Result**: VERIFIED
+**Files Reviewed**: TECH_DESIGN.md lines 405-455, 1000-1065
+**Finding**: Full route handler implementation with security validation.
 
 ---
 
-### 2. Type Safety Verification
+### 3. Type Safety Verification
 
-#### 2.1 Request/Response Types
-**Result**: ISSUE FOUND
-**Finding**: Several interfaces use `any` type which violates type safety requirements:
+#### 3.1 Request/Response Types
+**Result**: VERIFIED
+**Files Reviewed**: TECH_DESIGN.md lines 1069-1222
+**Finding**: All types are properly defined in `types/api.ts` specification:
 
-| Interface | Field | Issue |
-|-----------|-------|-------|
-| CreateJobRequest | `context?[key: string]` | Uses `any` (line 73-74) |
-| GetJobResponse.work_items[].output | `content` | Uses `any` (line 152) |
-| GetWorkItemResponse.output | `content` | Uses `any` (line 192) |
-| AgentCallbackRequest | `output?` | Uses `any` (line 356) |
+| Interface | Field | Type Used | Status |
+|-----------|-------|-----------|--------|
+| CreateJobRequest | context | `Record<string, string \| undefined>` | PROPER |
+| GetJobResponse.work_items[].output | content | `unknown` | ACCEPTABLE |
+| GetWorkItemResponse.output | content | `unknown` | ACCEPTABLE |
+| AgentCallbackRequest | output | `unknown` | ACCEPTABLE |
 
-**Severity**: HIGH
-**Resolution**: Define proper content type interfaces or use `unknown` with type guards. Suggest:
+**Note on `unknown` vs `any`**: The design uses `unknown` type for dynamic content fields. This is **type-safe** because:
+- `unknown` requires type guards before use (unlike `any`)
+- Content format varies by agent type (intentionally dynamic)
+- Documentation clearly states: "type depends on agent output format"
+
+This is the correct TypeScript pattern for truly polymorphic data.
+
+#### 3.2 Alignment with Core Data Structure Types
+**Result**: VERIFIED
+**Finding**: Types correctly import from `types/data.ts`:
+- `WorkItemStatus` - used correctly
+- `ReasoningEntry` - used correctly
+- `ActionItem` - used correctly
+
+Example from design (line 1076):
 ```typescript
-interface WorkContent {
-  type: string;
-  data: Record<string, unknown>;
-  format?: "text" | "json" | "markdown" | "binary";
+import type { WorkItemStatus, ReasoningEntry, ActionItem } from "./data";
+```
+
+---
+
+### 4. Rate Limiting (Gap A6 Resolved)
+
+**Description**: Rate limiting implementation
+**Result**: VERIFIED
+**Files Reviewed**: TECH_DESIGN.md lines 619-755
+**Finding**: Complete implementation specified:
+
+#### 4.1 Rate Limit Configuration
+```typescript
+interface RateLimitConfig {
+  windowMs: number;
+  maxRequests: number;
+  keyGenerator: (req: NextRequest, userId: string) => string;
 }
 ```
 
-#### 2.2 Alignment with Core Data Structure Types
-**Result**: VERIFIED WITH NOTES
-**Files Reviewed**: TECH_DESIGN.md, core-data-structure/TECH_DESIGN.md
-**Finding**: Response types generally align with Core Data Structure. However, some field names differ:
-- Design uses `WorkItemStatus` correctly from Core Data
-- `budget` object structure matches Core Data
+#### 4.2 Pre-configured Limiters
+| Endpoint | Limit | Window |
+|----------|-------|--------|
+| POST /api/jobs | 10 | per minute |
+| POST /api/jobs/:id/continue | 20 | per minute |
+| GET /api/jobs/:id | 60 | per minute |
+| GET /api/jobs/:id/stream | 5 connections | per user |
+
+#### 4.3 Implementation Details
+- Sliding window counter pattern
+- In-memory store with Redis upgrade path
+- Proper HTTP 429 responses with headers
+- SSE connection tracking with cleanup function
+
+**Previous Issue**: Only table of limits, no implementation
+**Resolution**: Full `lib/api/rate-limit.ts` implementation (70+ lines of code)
 
 ---
 
-### 3. Pattern Adherence Verification
+### 5. Request Validation (NEW)
 
-#### 3.1 Authentication Middleware
+**Description**: Input validation implementation
 **Result**: VERIFIED
-**Finding**: The `authMiddleware` pattern (lines 415-429) follows standard Express/Next.js middleware pattern. The `AuthenticatedRequest` interface properly extends Request.
+**Files Reviewed**: TECH_DESIGN.md lines 1226-1299
+**Finding**: Complete Zod-based validation specified:
 
-#### 3.2 Error Response Format
-**Result**: VERIFIED
-**Finding**: `ErrorResponse` interface (lines 436-440) follows a consistent pattern with `error`, `code`, and optional `details`. HTTP status codes table is comprehensive.
+```typescript
+// lib/api/validation.ts
+export const createJobSchema = z.object({
+  prompt: z.string().min(10).max(5000),
+  budget: z.number().min(0.01).max(100),
+  context: z.record(z.string().optional()).optional(),
+});
+```
 
-#### 3.3 SSE Implementation
-**Result**: VERIFIED WITH NOTES
-**Files Reviewed**: TECH_DESIGN.md lines 569-621
-**Finding**: SSE implementation pattern is correct. Uses Next.js API route pattern with proper:
-- Header configuration
-- Event subscription
-- Heartbeat mechanism
-- Cleanup on disconnect
-
-**Note**: The example uses Pages Router style (`pages/api/...`) but project uses App Router (`app/api/...`). Implementation should adapt to App Router pattern.
-
-#### 3.4 Orchestration Integration
-**Result**: VERIFIED
-**Finding**: Design correctly references:
-- `OrchestrationEngine.startJob()` for POST /api/jobs
-- `OrchestrationEngine.continueJob()` for POST /api/jobs/:id/continue
-- `orchestration.subscribe()` for SSE streaming
-
-This aligns with ORCH_GRAPH's `GraphRunner` interface.
+Includes:
+- Type-safe validation functions
+- Proper error mapping
+- Generic `ValidationResult<T>` type
 
 ---
 
-### 4. Dependency Verification
+### 6. SSE Event Types (Updated)
 
-#### 4.1 ORCHESTRATION Module Dependency
+**Description**: SSE event type alignment
 **Result**: VERIFIED
-**Files Reviewed**: TECH_DESIGN.md lines 481-488, orchestration/TECH_DESIGN.md
-**Finding**: API design correctly depends on:
-- `OrchestrationEngine.startJob()`
-- `OrchestrationEngine.continueJob()`
-- `OrchestrationEngine.subscribe()` for events
+**Files Reviewed**: TECH_DESIGN.md lines 858-900
+**Finding**: Updated `SSEEventType` specification matches design events:
 
-The `OrchestrationEngine` interface in ORCH_GRAPH (lines 105-127) provides all required methods.
+```typescript
+export type SSEEventType =
+  // Job lifecycle
+  | "job:started" | "job:planning" | "job:plan_verified"
+  | "job:executing" | "job:completed" | "job:failed" | "job:continued"
+  // Work item lifecycle
+  | "work:created" | "work:status_changed" | "work:prompt_generated"
+  | "work:output_received" | "work:verified" | "work:retry"
+  | "work:payment_confirmed" | "work:failed"
+  // Dynamic spawning
+  | "todo:spawned"
+  // Reasoning
+  | "reasoning"
+  // Connection
+  | "heartbeat";
+```
 
-#### 4.2 DATA Module Dependency
-**Result**: VERIFIED
-**Finding**: Design specifies read-only access to DATA via `DatabaseClient` for GET endpoints. This follows proper separation - writes go through ORCHESTRATION.
+**Comparison with existing `lib/api/sse.ts`**:
+- Current: 8 event types (status, plan, work_item, agent, verification, payment, error, complete)
+- Design: 17 event types with proper namespacing (job:*, work:*)
+- Status: Requires replacement per design
 
 ---
 
-### 5. Existing Code Assessment
+### 7. Pattern Adherence Verification
+
+#### 7.1 Authentication Pattern
+**Result**: VERIFIED
+**Finding**: Uses Clerk's `auth()` function correctly:
+```typescript
+const { userId: clerkId } = await auth();
+```
+
+#### 7.2 Database Access Pattern
+**Result**: VERIFIED
+**Finding**: Uses `getDatabaseClient()` abstraction, not raw MongoDB:
+```typescript
+const db = getDatabaseClient();
+const user = await db.getUser(clerkId);
+```
+
+#### 7.3 OrchestrationEngine Integration
+**Result**: VERIFIED
+**Finding**: Correctly delegates business logic:
+- `OrchestrationEngine.getInstance()` for singleton access
+- `orchestration.startJob()` for job creation
+- `orchestration.subscribe()` for event streaming
+- `orchestration.handleAgentCallback()` for webhooks
+
+---
+
+### 8. Existing Code Assessment
 
 **Per user instruction**: Existing scaffolded code should be flagged for replacement, not accommodation.
 
-#### 5.1 `/app/api/jobs/route.ts` (Current)
-**Status**: REQUIRES REPLACEMENT
-**Issues**:
-1. Uses `budget_total` in request body, design specifies `budget`
-2. Missing `context` field in request handling
-3. Returns raw `job` object, design specifies `CreateJobResponse` format with `job_id`, `status`, `stream_url`
-4. Does not trigger orchestration graph (TODO comment present)
-5. Uses direct DB client calls instead of OrchestrationEngine
+| File | Current State | Required Action |
+|------|---------------|-----------------|
+| `app/api/jobs/route.ts` | Uses `budget_total`, returns `{ job }` | REPLACE |
+| `app/api/jobs/[jobId]/route.ts` | Uses ObjectId, raw MongoDB | REPLACE |
+| `app/api/jobs/[jobId]/stream/route.ts` | Wrong events, uses ObjectId, closes after 1s | REPLACE |
+| `lib/api/sse.ts` | 8 event types, wrong structure | UPDATE |
+| `app/api/jobs/[id]/continue/route.ts` | Does not exist | CREATE |
+| `app/api/jobs/[id]/work/[workId]/route.ts` | Does not exist | CREATE |
+| `app/api/webhooks/work/[workId]/route.ts` | Does not exist | CREATE |
+| `lib/api/rate-limit.ts` | Does not exist | CREATE |
+| `lib/api/validation.ts` | Does not exist | CREATE |
+| `types/api.ts` | Does not exist | CREATE |
 
-#### 5.2 `/app/api/jobs/[jobId]/route.ts` (Current)
-**Status**: REQUIRES REPLACEMENT
-**Issues**:
-1. Uses `ObjectId` validation - design uses string IDs (nanoid)
-2. Uses raw MongoDB collection access instead of DatabaseClient
-3. Returns `{ job }` but design specifies `GetJobResponse` format with structured fields
-4. Missing work_items, action_items, reasoning_log in response
-
-#### 5.3 `/app/api/jobs/[jobId]/stream/route.ts` (Current)
-**Status**: REQUIRES REPLACEMENT
-**Issues**:
-1. Event types don't match design specification
-2. Uses `ObjectId` instead of string job_id
-3. Closes stream after 1 second (placeholder)
-4. Missing orchestration.subscribe() integration
-5. Missing heartbeat implementation per spec
-
-#### 5.4 `/lib/api/sse.ts` (Current)
-**Status**: PARTIAL - CAN BE ENHANCED
-**Issues**:
-1. `SSEEventType` enum doesn't match design events (lines 5-13)
-2. Missing event types: `job:started`, `job:planning`, `work:created`, etc.
-3. Event structure differs from design specification
-
-**Resolution**: Update SSE utilities to match TECH_DESIGN.md event specification.
-
-#### 5.5 Webhook Routes
-**Status**: MISSING - NEEDS CREATION
-**Finding**: No `/app/api/webhooks/work/[work_id]/route.ts` exists.
+**Note**: Directory uses `[jobId]` but design uses `[id]`. Design is source of truth - use `[id]`.
 
 ---
 
-### 6. Missing Components
+## Previously Identified Gaps - Resolution Status
 
-#### 6.1 Missing Files Needed
-Per DELIVERY_SEQUENCE.md (lines 287-293), these files need creation:
+### Gap A1: Use of `any` Type
+**Previous Severity**: HIGH
+**Status**: RESOLVED
+**Resolution**: Design uses `unknown` type instead of `any` for dynamic content. This is the correct TypeScript pattern - `unknown` is type-safe (requires type guards) while `any` is not.
 
-| File | Status | Notes |
-|------|--------|-------|
-| `app/api/jobs/route.ts` | EXISTS - REPLACE | Per findings above |
-| `app/api/jobs/[id]/route.ts` | EXISTS - REPLACE | Directory naming differs |
-| `app/api/jobs/[id]/continue/route.ts` | MISSING | Create per design |
-| `app/api/jobs/[id]/stream/route.ts` | EXISTS - REPLACE | Per findings above |
-| `app/api/agents/route.ts` | EXISTS | Not in this design scope |
-| `app/api/agents/discover/route.ts` | EXISTS | Not in this design scope |
-| `app/api/webhooks/work/[work_id]/route.ts` | MISSING | Create per design |
+### Gap A2: Router Style Mismatch
+**Previous Severity**: MEDIUM
+**Status**: RESOLVED
+**Resolution**: SSE example (lines 762-834) now uses correct App Router pattern with:
+- `{ params }: { params: Promise<{ id: string }> }`
+- Async param destructuring: `const { id: job_id } = await params;`
+- `NextRequest` type for request
 
-#### 6.2 Missing Middleware
-- Rate limiting middleware is described but not fully specified
-- Authentication middleware code exists conceptually but file location not specified
+### Gap A3: Missing File Structure
+**Previous Severity**: MEDIUM
+**Status**: RESOLVED
+**Resolution**: Authoritative directory structure added (lines 24-82) with:
+- Clear file paths for all routes
+- Files Impact Analysis table
+- Note clarifying URL parameter naming (`:id` in docs vs `[id]` in Next.js)
 
----
+### Gap A4: Existing Code Divergence
+**Previous Severity**: HIGH
+**Status**: ACKNOWLEDGED
+**Resolution**: Design explicitly states replacement is required. Implementation notes specify all files to replace/create.
 
-### 7. Simplicity Assessment
+### Gap A5: Missing Webhook Route
+**Previous Severity**: HIGH
+**Status**: RESOLVED
+**Resolution**: Full route handler implementation provided (lines 1000-1065)
 
-**Result**: VERIFIED
-**Finding**: The design is appropriately simple for its scope:
-- Clear separation: API handles HTTP, ORCHESTRATION handles logic
-- No over-engineering of validation (uses simple schema objects)
-- Minimal state in API layer
-- Proper delegation to dependent modules
-
----
-
-## Identified Gaps
-
-### Gap #1: Use of `any` Type
-**Severity**: HIGH (Pattern Adherence Violation)
-**Description**: Multiple interfaces use `any` type for content fields
-**Reasoning**: Violates TypeScript type safety requirements per verification mandate
-**Impact**: Runtime type errors possible, reduced IDE support, weaker contracts
-**Resolution**:
-- Define `WorkContent` or similar interface
-- Use `unknown` with type guards for truly dynamic content
-- Document expected content structures per agent type
-
-**Files Affected**: TECH_DESIGN.md lines 73-74, 152, 192, 356
-
-### Gap #2: Router Style Mismatch
-**Severity**: MEDIUM
-**Description**: SSE example uses Pages Router (`pages/api/...`) but project uses App Router
-**Reasoning**: Implementation will need adaptation
-**Impact**: Developers may copy example verbatim and encounter issues
-**Resolution**: Update example to use App Router pattern:
-```typescript
-// app/api/jobs/[job_id]/stream/route.ts
-export async function GET(
-  request: NextRequest,
-  { params }: { params: Promise<{ job_id: string }> }
-) {
-  // ...
-}
-```
-
-**Files Affected**: TECH_DESIGN.md lines 573-599
-
-### Gap #3: Existing Code Divergence
-**Severity**: HIGH
-**Description**: Scaffolded code significantly differs from design specification
-**Reasoning**: Per user instruction, existing code may be WRONG and design is SOLE SOURCE OF TRUTH
-**Impact**: Implementation must replace, not adapt, existing code
-**Resolution**: Implementation task must explicitly replace:
-- `/app/api/jobs/route.ts`
-- `/app/api/jobs/[jobId]/route.ts`
-- `/app/api/jobs/[jobId]/stream/route.ts`
-- `/lib/api/sse.ts` (update event types)
-
-**Files Affected**: All files listed above
-
-### Gap #4: Missing Webhook Route
-**Severity**: HIGH
-**Description**: No webhook endpoint exists for agent callbacks
-**Reasoning**: Critical for async agent flow per ORCH_INTEGRATIONS design
-**Impact**: External agents cannot report completion
-**Resolution**: Create `/app/api/webhooks/work/[work_id]/route.ts`
-
-### Gap #5: Missing Continue Endpoint
-**Severity**: HIGH
-**Description**: No `/api/jobs/[id]/continue` route exists
-**Reasoning**: Required for user continuation flow
-**Impact**: Users cannot continue/modify jobs
-**Resolution**: Create `/app/api/jobs/[id]/continue/route.ts`
-
-### Gap #6: Rate Limiting Not Specified
-**Severity**: LOW
-**Description**: Rate limits are listed in a table but no implementation approach specified
-**Reasoning**: This is typically handled at infrastructure level or via middleware
-**Impact**: Minor - can be addressed during implementation
-**Resolution**: Note during implementation to add rate limiting middleware (e.g., using `next-rate-limit` or similar)
+### Gap A6: Rate Limiting Not Specified
+**Previous Severity**: LOW
+**Status**: RESOLVED
+**Resolution**: Complete implementation specified (lines 619-755) with:
+- `RateLimitConfig` and `RateLimitResult` interfaces
+- `createRateLimiter()` factory function
+- Pre-configured limiters for each endpoint
+- SSE connection limiting with cleanup
 
 ---
 
-## Recommendations
+## Minor Observations (Not Blockers)
 
-### Immediate Actions (Must Fix Before Implementation)
+### 1. Error Codes Constant
+**Finding**: Design defines `ErrorCodes` constant (lines 1209-1219) - good practice
+**Status**: POSITIVE
 
-1. **Replace `any` types** with proper interfaces or `unknown`
-2. **Update SSE example** to use App Router pattern
-3. **Add directory structure note** clarifying that implementation uses `[id]` not `[job_id]` for URL params
+### 2. HMAC Signature Verification
+**Finding**: Webhook security mentions "Optional: HMAC signature verification" (line 432)
+**Status**: ACCEPTABLE - noted as optional enhancement
 
-### Improvements (Should Consider)
-
-1. **Add validation library specification** - Zod or similar for request validation
-2. **Document error codes** - Create enum or constants file for error codes
-3. **Specify API client location** - Where will the `APIClient` interface be implemented?
-
-### Future Considerations
-
-1. **OpenAPI/Swagger specification** - Generate from TypeScript types
-2. **API versioning strategy** - `/api/v1/` prefix consideration
-3. **Request/Response logging** - For debugging and audit
+### 3. API Client Interface Location
+**Finding**: `APIClient` interface defined (lines 555-565) but file location not specified
+**Status**: MINOR - likely goes in `lib/api/client.ts` (for frontend use)
 
 ---
 
@@ -338,25 +358,27 @@ export async function GET(
 - [x] TECH_DESIGN.md serves as requirements (REQUIREMENTS.md waived per context)
 - [x] ALL endpoints fully specified in TECH_DESIGN.md
 - [x] No flows are PARTIAL or MISSING
-- [x] SSE event types comprehensively defined
+- [x] SSE event types comprehensively defined (17 types)
 
 **Pattern & Type Safety (CRITICAL)**
-- [ ] **NO 'any' types used anywhere in the design** - FAILED (4 instances found)
-- [x] Patterns generally consistent with existing codebase
+- [x] **NO 'any' types used anywhere in the design** - uses `unknown`
+- [x] Patterns consistent with existing codebase (Clerk auth, DatabaseClient)
 - [x] No unnecessary new abstractions
 - [x] Naming conventions follow existing standards
 - [x] Depends on correct module interfaces (ORCHESTRATION, DATA)
 
 **Core Requirements**
 - [x] All user flows mapped to design elements
-- [x] Error handling comprehensive
-- [x] Performance implications minimal (SSE, lazy loading)
+- [x] Error handling comprehensive (ErrorResponse, HTTP codes)
+- [x] Performance implications addressed (SSE heartbeat, lazy loading)
 - [x] Security considerations addressed (auth, webhook validation)
-- [x] Integration points clarified
-- [x] Data models complete with TypeScript types (except `any` issues)
+- [x] Rate limiting fully specified with implementation
+- [x] Integration points clarified (OrchestrationEngine, DatabaseClient)
+- [x] Data models complete with TypeScript types
 - [x] API contracts finalized with type definitions
-- [x] Edge cases covered (error responses)
+- [x] Edge cases covered (error responses, rate limiting)
 - [x] No over-engineering detected
+- [x] Validation with Zod specified
 
 ---
 
@@ -365,58 +387,64 @@ export async function GET(
 | Category | Score | Notes |
 |----------|-------|-------|
 | Flow Coverage | 3/3 | All endpoints fully specified |
-| Pattern Adherence | 1.5/2 | Minor router style mismatch |
-| Type Safety | 1/2 | 4 instances of `any` type |
-| Completeness | 1/1 | All required elements present |
-| Clarity | 1/1 | Clear examples and documentation |
-| Maintainability | 0.5/1 | Existing code divergence creates work |
+| Pattern Adherence | 2/2 | App Router, Clerk auth, DatabaseClient patterns correct |
+| Type Safety | 2/2 | Uses `unknown` (type-safe), no `any` |
+| Completeness | 1/1 | Rate limiting, validation, full implementations |
+| Clarity | 1/1 | Clear examples, code snippets, directory structure |
+| Maintainability | 0.5/1 | Existing code requires replacement (acknowledged) |
 
-**Total Score: 8/10** (adjusted from initial estimate after detailed review)
-
-**Note**: Score would be 9/10 if `any` types were replaced.
+**Total Score: 9.5/10**
 
 ---
 
 ## Final Verdict
 
-### REQUIRES MINOR REVISION
+### APPROVED FOR IMPLEMENTATION
 
-**Rationale**: The technical design is comprehensive, well-structured, and properly integrates with dependent modules. The primary blocker is the use of `any` types in 4 interface locations, which violates the type safety requirement.
+**Rationale**: The technical design is comprehensive, well-structured, and properly addresses all previously identified gaps:
 
-**Required Changes**:
-1. Replace all `any` types with proper interfaces (HIGH PRIORITY)
-2. Update SSE example to App Router pattern (MEDIUM PRIORITY)
+1. **Type Safety**: Uses `unknown` (not `any`) for dynamic content - correct TypeScript pattern
+2. **App Router**: SSE implementation uses correct Next.js App Router pattern
+3. **File Structure**: Authoritative directory structure defined with clear replacement instructions
+4. **Rate Limiting**: Full implementation specified with code
+5. **Validation**: Zod-based validation fully specified
 
-**Implementation Notes**:
-- Existing scaffolded code MUST be replaced per user instruction
-- Missing routes (`/continue`, `/webhooks/work/[work_id]`) must be created
-- SSE utilities need event type updates
-
-**Decision**: Once `any` types are replaced, design is **APPROVED FOR IMPLEMENTATION**.
+**No Blocking Issues Remain**
 
 ---
 
-## Implementation Path
+## Implementation Checklist
 
 When implementing, the developer should:
 
-1. **Create or replace** (not modify) these files:
-   - `app/api/jobs/route.ts`
-   - `app/api/jobs/[id]/route.ts`
-   - `app/api/jobs/[id]/continue/route.ts` (NEW)
-   - `app/api/jobs/[id]/stream/route.ts`
-   - `app/api/jobs/[id]/work/[work_id]/route.ts` (NEW)
-   - `app/api/webhooks/work/[work_id]/route.ts` (NEW)
-   - `lib/api/sse.ts` (UPDATE event types)
+### Files to CREATE (from scratch)
+1. `app/api/jobs/[id]/continue/route.ts` - job continuation
+2. `app/api/jobs/[id]/work/[workId]/route.ts` - work item lazy load
+3. `app/api/webhooks/work/[workId]/route.ts` - agent callbacks
+4. `lib/api/rate-limit.ts` - rate limiting middleware
+5. `lib/api/validation.ts` - Zod validation schemas
+6. `types/api.ts` - API request/response types
 
-2. **Import from dependencies**:
-   - `OrchestrationEngine` from `lib/orchestration`
-   - `DatabaseClient` from `lib/db`
-   - Types from `types/` directory
+### Files to REPLACE (delete and recreate)
+1. `app/api/jobs/route.ts` - POST /api/jobs (design spec)
+2. `app/api/jobs/[jobId]/route.ts` -> `app/api/jobs/[id]/route.ts` - GET job (rename + replace)
+3. `app/api/jobs/[jobId]/stream/route.ts` -> `app/api/jobs/[id]/stream/route.ts` - SSE (rename + replace)
 
-3. **Follow design exactly** - TECH_DESIGN.md is source of truth
+### Files to UPDATE
+1. `lib/api/sse.ts` - update `SSEEventType` to match design (17 event types)
+2. `lib/api/index.ts` - add re-exports for new utilities
+
+### Directory Renaming
+- `app/api/jobs/[jobId]/` -> `app/api/jobs/[id]/` (to match design)
+
+### Dependencies Required
+- `OrchestrationEngine` from `lib/orchestration`
+- `DatabaseClient` from `lib/db`
+- `zod` package for validation
 
 ---
 
 *Verification completed by: Design Verifier Agent*
 *Report generated: 2026-01-10*
+*Previous score: 7/10 (Needs Revision)*
+*Current score: 9.5/10 (Approved)*

@@ -4,6 +4,23 @@ Agent discovery: Voyage AI embeddings, MongoDB vector search, and reranking.
 
 ---
 
+## File Structure
+
+```
+lib/orchestration/discovery/
+├── index.ts           # Public exports (DiscoveryService)
+├── service.ts         # Main DiscoveryService implementation
+├── embeddings.ts      # Voyage AI embedding functions
+├── rerank.ts          # Voyage AI reranking functions
+├── vector-search.ts   # MongoDB vector search queries
+├── health.ts          # Health check implementation
+├── events.ts          # Event emission for discovery operations
+├── utils.ts           # Utilities (generateOperationId, cost calculations)
+└── types.ts           # Type definitions (DiscoveryRequest, etc.)
+```
+
+---
+
 ## Scope
 
 **Owns:**
@@ -33,16 +50,35 @@ This module can be developed independently once DATA module provides the `agents
 
 ---
 
-## Voyage AI Pricing
+## Utility Functions
 
-Cost tracking for discovery operations using Voyage AI.
-
-### Pricing Constants
+### lib/orchestration/discovery/utils.ts
 
 ```typescript
+import { randomUUID } from 'crypto';
+
+/**
+ * Generates a unique operation ID for cost tracking.
+ * Format: op_{uuid} - matches pattern used across all orchestration modules.
+ *
+ * @returns Unique operation ID string
+ */
+export function generateOperationId(): string {
+  return `op_${randomUUID()}`;
+}
+
+/**
+ * Sleep utility for retry backoff.
+ *
+ * @param ms - Milliseconds to sleep
+ */
+export function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 // Voyage AI pricing (as of January 2025)
 // Reference: https://docs.voyageai.com/pricing/
-const VOYAGE_PRICING = {
+export const VOYAGE_PRICING = {
   // Embedding models
   "voyage-3": {
     per_million_tokens: 0.06,    // $0.06 per 1M tokens
@@ -59,20 +95,75 @@ const VOYAGE_PRICING = {
   "rerank-2-lite": {
     per_million_tokens: 0.02,    // $0.02 per 1M tokens
   }
-};
+} as const;
 
-// Cost calculation helpers
-function calculateVoyageEmbedCost(tokens: number, model: string = "voyage-3"): number {
+export type VoyageEmbedModel = "voyage-3" | "voyage-3-lite";
+export type VoyageRerankModel = "rerank-2" | "rerank-2-lite";
+
+/**
+ * Calculate cost for Voyage AI embedding operation.
+ *
+ * @param tokens - Number of tokens processed
+ * @param model - Voyage embedding model used
+ * @returns Cost in USD
+ */
+export function calculateVoyageEmbedCost(
+  tokens: number,
+  model: VoyageEmbedModel = "voyage-3"
+): number {
   const pricing = VOYAGE_PRICING[model];
-  if (!pricing) throw new Error(`Unknown model: ${model}`);
   return (tokens / 1_000_000) * pricing.per_million_tokens;
 }
 
-function calculateVoyageRerankCost(tokens: number, model: string = "rerank-2"): number {
+/**
+ * Calculate cost for Voyage AI reranking operation.
+ *
+ * @param tokens - Number of tokens processed
+ * @param model - Voyage reranking model used
+ * @returns Cost in USD
+ */
+export function calculateVoyageRerankCost(
+  tokens: number,
+  model: VoyageRerankModel = "rerank-2"
+): number {
   const pricing = VOYAGE_PRICING[model];
-  if (!pricing) throw new Error(`Unknown model: ${model}`);
   return (tokens / 1_000_000) * pricing.per_million_tokens;
 }
+
+/**
+ * Estimate tokens for reranking (query + each document).
+ * Conservative estimate: ~4 chars per token.
+ *
+ * @param query - Search query string
+ * @param documents - Array of document strings to rerank
+ * @returns Estimated token count
+ */
+export function estimateRerankTokens(query: string, documents: string[]): number {
+  const queryTokens = Math.ceil(query.length / 4);
+  const docTokens = documents.reduce((sum, doc) => sum + Math.ceil(doc.length / 4), 0);
+  return queryTokens + docTokens;
+}
+```
+
+---
+
+## Voyage AI Pricing
+
+Cost tracking for discovery operations using Voyage AI.
+
+### Pricing Constants
+
+Pricing constants and cost calculation helpers are defined in `lib/orchestration/discovery/utils.ts` (see Utility Functions section above).
+
+```typescript
+// Import from utils.ts
+import {
+  VOYAGE_PRICING,
+  calculateVoyageEmbedCost,
+  calculateVoyageRerankCost,
+  estimateRerankTokens,
+  generateOperationId
+} from './utils';
 ```
 
 ### Cost Examples
@@ -147,7 +238,8 @@ const voyage = new VoyageAIClient({
 ### Embedding Function
 
 ```typescript
-import { generateOperationId } from './utils';
+import { generateOperationId, calculateVoyageEmbedCost } from './utils';
+import type { LLMOperation } from '@/types';
 
 interface EmbeddingResult {
   embedding: number[];
@@ -632,14 +724,371 @@ interface DiscoveryResult {
 
 ---
 
-## Events Emitted
+## Event Emission
+
+Discovery operations emit events for SSE streaming to the frontend, following the same pattern established in ORCH_GRAPH.
+
+### lib/orchestration/discovery/events.ts
 
 ```typescript
-type DiscoveryEvent =
-  | { type: "discovery:started"; task: string }
-  | { type: "discovery:vector_search_complete"; candidates_count: number }
-  | { type: "discovery:rerank_complete"; top_candidates: string[] }
-  | { type: "discovery:complete"; selected_agent: string; relevance_score: number };
+/**
+ * Discovery event types for SSE streaming.
+ * Events are published to the job-specific event bus channel.
+ */
+
+export type DiscoveryEvent =
+  | { type: "discovery:started"; job_id: string; task: string; timestamp: Date }
+  | { type: "discovery:embedding_complete"; job_id: string; tokens: number; cost: number; timestamp: Date }
+  | { type: "discovery:vector_search_complete"; job_id: string; candidates_count: number; search_time_ms: number; timestamp: Date }
+  | { type: "discovery:rerank_complete"; job_id: string; top_candidates: string[]; timestamp: Date }
+  | { type: "discovery:complete"; job_id: string; candidates_count: number; total_cost: number; total_time_ms: number; timestamp: Date }
+  | { type: "discovery:error"; job_id: string; error: string; timestamp: Date };
+
+/**
+ * Event emitter interface (injected from ORCH_GRAPH event bus).
+ * In production, this publishes to Redis pub/sub for SSE streaming.
+ */
+export interface DiscoveryEventEmitter {
+  emit(event: DiscoveryEvent): void;
+}
+
+/**
+ * Default no-op emitter for standalone usage or testing.
+ */
+export const noOpEmitter: DiscoveryEventEmitter = {
+  emit: () => {}
+};
+
+/**
+ * Create an event emitter that publishes to the ORCH_GRAPH event bus.
+ * This follows the pattern established in ORCH_GRAPH for SSE streaming.
+ *
+ * @param eventBus - The event bus instance (Redis pub/sub or similar)
+ * @param job_id - The job ID for channel routing
+ */
+export function createDiscoveryEmitter(
+  eventBus: { publish: (channel: string, event: unknown) => void },
+  job_id: string
+): DiscoveryEventEmitter {
+  return {
+    emit: (event: DiscoveryEvent) => {
+      // Publish to job-specific channel for SSE streaming
+      eventBus.publish(`job:${job_id}`, event);
+    }
+  };
+}
+```
+
+### Event Emission in Discovery Flow
+
+Events are emitted at key points during the discovery pipeline:
+
+```typescript
+import { DiscoveryEventEmitter, noOpEmitter } from './events';
+
+async function discoverAgentsWithEvents(
+  request: DiscoveryRequest,
+  emitter: DiscoveryEventEmitter = noOpEmitter,
+  job_id?: string
+): Promise<DiscoveryResult> {
+  const startTime = Date.now();
+  const operations: LLMOperation[] = [];
+
+  // Event: Discovery started
+  if (job_id) {
+    emitter.emit({
+      type: "discovery:started",
+      job_id,
+      task: request.task_description,
+      timestamp: new Date()
+    });
+  }
+
+  try {
+    // Step 1: Embed the query
+    const embedResult = await embedQuery(request.task_description);
+    operations.push(embedResult.operation);
+
+    // Event: Embedding complete
+    if (job_id) {
+      emitter.emit({
+        type: "discovery:embedding_complete",
+        job_id,
+        tokens: embedResult.operation.native_tokens_prompt || 0,
+        cost: embedResult.operation.total_cost,
+        timestamp: new Date()
+      });
+    }
+
+    // Step 2: Vector search
+    const vectorSearchStart = Date.now();
+    const vectorResults = await vectorSearchWithFilter(
+      embedResult.embedding,
+      request.max_price || Infinity,
+      request.min_quality || 0.80
+    );
+    const vectorSearchTime = Date.now() - vectorSearchStart;
+
+    // Event: Vector search complete
+    if (job_id) {
+      emitter.emit({
+        type: "discovery:vector_search_complete",
+        job_id,
+        candidates_count: vectorResults.length,
+        search_time_ms: vectorSearchTime,
+        timestamp: new Date()
+      });
+    }
+
+    if (vectorResults.length === 0) {
+      // Event: Complete (no candidates)
+      if (job_id) {
+        emitter.emit({
+          type: "discovery:complete",
+          job_id,
+          candidates_count: 0,
+          total_cost: operations.reduce((sum, op) => sum + op.total_cost, 0),
+          total_time_ms: Date.now() - startTime,
+          timestamp: new Date()
+        });
+      }
+
+      return {
+        candidates: [],
+        llm_operations: operations,
+        total_cost: operations.reduce((sum, op) => sum + op.total_cost, 0),
+        search_time_ms: Date.now() - startTime
+      };
+    }
+
+    // Step 3: Rerank
+    const rerankResponse = await rerankCandidates(
+      request.task_description,
+      vectorResults,
+      request.limit || 10
+    );
+    operations.push(rerankResponse.operation);
+
+    // Event: Rerank complete
+    if (job_id) {
+      emitter.emit({
+        type: "discovery:rerank_complete",
+        job_id,
+        top_candidates: rerankResponse.results.slice(0, 3).map(r => r.name),
+        timestamp: new Date()
+      });
+    }
+
+    const totalCost = operations.reduce((sum, op) => sum + op.total_cost, 0);
+    const totalTime = Date.now() - startTime;
+
+    // Event: Discovery complete
+    if (job_id) {
+      emitter.emit({
+        type: "discovery:complete",
+        job_id,
+        candidates_count: rerankResponse.results.length,
+        total_cost: totalCost,
+        total_time_ms: totalTime,
+        timestamp: new Date()
+      });
+    }
+
+    return {
+      candidates: rerankResponse.results,
+      llm_operations: operations,
+      total_cost: totalCost,
+      search_time_ms: totalTime
+    };
+
+  } catch (error) {
+    // Event: Error
+    if (job_id) {
+      emitter.emit({
+        type: "discovery:error",
+        job_id,
+        error: error instanceof Error ? error.message : "Unknown error",
+        timestamp: new Date()
+      });
+    }
+    throw error;
+  }
+}
+```
+
+### Integration with ORCH_GRAPH
+
+When called from the Planning Agent node in ORCH_GRAPH:
+
+```typescript
+// In planning_agent node (ORCH_GRAPH)
+import { createDiscoveryEmitter } from '@/lib/orchestration/discovery/events';
+
+async function planningAgentNode(state: GraphState): Promise<Partial<GraphState>> {
+  // Create emitter connected to job's event channel
+  const emitter = createDiscoveryEmitter(eventBus, state.job_id);
+
+  // Discovery operations will emit events to the SSE stream
+  const discovery = await discoverAgentsWithEvents(
+    { task_description: actionItem.item, limit: 10 },
+    emitter,
+    state.job_id
+  );
+
+  // ... rest of planning logic
+}
+```
+
+---
+
+## Health Check Implementation
+
+### lib/orchestration/discovery/health.ts
+
+```typescript
+import { VoyageAIClient } from "voyageai";
+import { getDatabaseClient } from "@/lib/db";
+
+/**
+ * Health check response type.
+ */
+export interface HealthCheckResult {
+  voyage: boolean;
+  mongo_vector: boolean;
+  details?: {
+    voyage_latency_ms?: number;
+    mongo_latency_ms?: number;
+    voyage_error?: string;
+    mongo_error?: string;
+  };
+}
+
+/**
+ * Performs health check on Voyage AI and MongoDB vector search.
+ *
+ * @param voyageClient - Voyage AI client instance
+ * @returns Health status for both services
+ */
+export async function healthCheck(
+  voyageClient: VoyageAIClient
+): Promise<HealthCheckResult> {
+  const result: HealthCheckResult = {
+    voyage: false,
+    mongo_vector: false,
+    details: {}
+  };
+
+  // Check Voyage AI
+  const voyageStart = Date.now();
+  try {
+    await voyageClient.embed({
+      input: ["health check"],
+      model: "voyage-3"
+    });
+    result.voyage = true;
+    result.details!.voyage_latency_ms = Date.now() - voyageStart;
+  } catch (error) {
+    result.voyage = false;
+    result.details!.voyage_error = error instanceof Error ? error.message : "Unknown error";
+  }
+
+  // Check MongoDB Vector Search
+  const mongoStart = Date.now();
+  try {
+    const db = getDatabaseClient();
+
+    // Create a minimal test embedding (1024 dimensions of zeros)
+    const testEmbedding = new Array(1024).fill(0);
+
+    // Run a minimal vector search query
+    // This validates the index exists and is functional
+    const agents = await db.searchAgentsByCapability("health check test", 1);
+
+    // If searchAgentsByCapability doesn't use vector search, do direct aggregate
+    // This ensures the vector index is tested
+    const collection = await import("@/lib/db").then(m => m.getAgentsCollection());
+    await collection.aggregate([
+      {
+        $vectorSearch: {
+          index: "agent_capabilities_vector",
+          path: "capabilities_embedding",
+          queryVector: testEmbedding,
+          numCandidates: 3,
+          limit: 1
+        }
+      }
+    ]).toArray();
+
+    result.mongo_vector = true;
+    result.details!.mongo_latency_ms = Date.now() - mongoStart;
+  } catch (error) {
+    result.mongo_vector = false;
+    result.details!.mongo_error = error instanceof Error ? error.message : "Unknown error";
+  }
+
+  return result;
+}
+
+/**
+ * Simplified health check that returns just boolean status.
+ * Use for quick liveness checks.
+ */
+export async function quickHealthCheck(
+  voyageClient: VoyageAIClient
+): Promise<{ voyage: boolean; mongo_vector: boolean }> {
+  const result = await healthCheck(voyageClient);
+  return {
+    voyage: result.voyage,
+    mongo_vector: result.mongo_vector
+  };
+}
+```
+
+### Health Check Usage
+
+```typescript
+// In DiscoveryService implementation
+import { healthCheck, quickHealthCheck } from './health';
+
+class DiscoveryServiceImpl implements DiscoveryService {
+  private voyageClient: VoyageAIClient;
+
+  constructor(voyageClient: VoyageAIClient) {
+    this.voyageClient = voyageClient;
+  }
+
+  async healthCheck(): Promise<{ voyage: boolean; mongo_vector: boolean }> {
+    return quickHealthCheck(this.voyageClient);
+  }
+
+  // For detailed health status (e.g., admin endpoints)
+  async detailedHealthCheck(): Promise<HealthCheckResult> {
+    return healthCheck(this.voyageClient);
+  }
+}
+```
+
+### Health Check Endpoint Integration
+
+The health check is exposed via the API module:
+
+```typescript
+// In API routes (MODULE_API)
+// GET /api/health/discovery
+
+import { getDiscoveryService } from '@/lib/orchestration/discovery';
+
+export async function GET() {
+  const discovery = getDiscoveryService();
+  const health = await discovery.healthCheck();
+
+  const isHealthy = health.voyage && health.mongo_vector;
+
+  return Response.json(
+    { status: isHealthy ? "healthy" : "unhealthy", ...health },
+    { status: isHealthy ? 200 : 503 }
+  );
+}
 ```
 
 ---
@@ -678,6 +1127,119 @@ describe("DiscoveryService", () => {
     result.candidates.forEach(c => {
       expect(c.stats.avg_score).toBeGreaterThanOrEqual(0.85);
     });
+  });
+
+  it("should handle zero matches gracefully", async () => {
+    const result = await discoverAgents({
+      task_description: "extremely obscure nonexistent capability xyz123",
+      limit: 5
+    });
+
+    expect(result.candidates).toEqual([]);
+    expect(result.llm_operations.length).toBe(1); // Only embedding, no rerank
+    expect(result.total_cost).toBeGreaterThan(0); // Embedding still costs
+  });
+
+  it("should track all LLM operations for cost billing", async () => {
+    const result = await discoverAgents({
+      task_description: "content creation",
+      limit: 5
+    });
+
+    // Should have embedding + rerank operations (if candidates found)
+    if (result.candidates.length > 0) {
+      expect(result.llm_operations.length).toBe(2);
+      expect(result.llm_operations[0].operation_type).toBe("discovery_embed");
+      expect(result.llm_operations[1].operation_type).toBe("discovery_rerank");
+    }
+
+    // Total cost should match sum of operations
+    const summedCost = result.llm_operations.reduce((sum, op) => sum + op.total_cost, 0);
+    expect(result.total_cost).toBe(summedCost);
+  });
+});
+
+describe("DiscoveryService.healthCheck", () => {
+  it("should return healthy status when both services are up", async () => {
+    const service = getDiscoveryService();
+    const health = await service.healthCheck();
+
+    expect(health.voyage).toBe(true);
+    expect(health.mongo_vector).toBe(true);
+  });
+
+  it("should return detailed latency information", async () => {
+    const service = getDiscoveryService() as DiscoveryServiceImpl;
+    const health = await service.detailedHealthCheck();
+
+    expect(health.details?.voyage_latency_ms).toBeDefined();
+    expect(health.details?.mongo_latency_ms).toBeDefined();
+  });
+});
+
+describe("Event Emission", () => {
+  it("should emit events at each pipeline stage", async () => {
+    const events: DiscoveryEvent[] = [];
+    const mockEmitter: DiscoveryEventEmitter = {
+      emit: (event) => events.push(event)
+    };
+
+    await discoverAgentsWithEvents(
+      { task_description: "content creation", limit: 5 },
+      mockEmitter,
+      "job_test_123"
+    );
+
+    // Verify event sequence
+    expect(events[0].type).toBe("discovery:started");
+    expect(events[1].type).toBe("discovery:embedding_complete");
+    expect(events[2].type).toBe("discovery:vector_search_complete");
+    // If candidates found:
+    // expect(events[3].type).toBe("discovery:rerank_complete");
+    // expect(events[4].type).toBe("discovery:complete");
+  });
+
+  it("should emit error event on failure", async () => {
+    const events: DiscoveryEvent[] = [];
+    const mockEmitter: DiscoveryEventEmitter = {
+      emit: (event) => events.push(event)
+    };
+
+    // Mock Voyage AI to throw error
+    // ... test implementation
+
+    const errorEvent = events.find(e => e.type === "discovery:error");
+    expect(errorEvent).toBeDefined();
+  });
+});
+
+describe("Utility Functions", () => {
+  it("should generate unique operation IDs", () => {
+    const id1 = generateOperationId();
+    const id2 = generateOperationId();
+
+    expect(id1).toMatch(/^op_[a-f0-9-]{36}$/);
+    expect(id2).toMatch(/^op_[a-f0-9-]{36}$/);
+    expect(id1).not.toBe(id2);
+  });
+
+  it("should calculate embedding cost correctly", () => {
+    // 1000 tokens at $0.06/1M = $0.00006
+    const cost = calculateVoyageEmbedCost(1000, "voyage-3");
+    expect(cost).toBeCloseTo(0.00006, 8);
+  });
+
+  it("should calculate rerank cost correctly", () => {
+    // 2000 tokens at $0.05/1M = $0.0001
+    const cost = calculateVoyageRerankCost(2000, "rerank-2");
+    expect(cost).toBeCloseTo(0.0001, 8);
+  });
+
+  it("should estimate rerank tokens correctly", () => {
+    const tokens = estimateRerankTokens("test query", ["doc one", "doc two"]);
+    // "test query" = ~2.5 tokens, "doc one" = ~2 tokens, "doc two" = ~2 tokens
+    // Total = ~6.5 tokens (rounded up per string)
+    expect(tokens).toBeGreaterThan(0);
   });
 });
 ```

@@ -3,303 +3,252 @@
 ## Executive Summary
 
 - **Design Document**: `/Users/sergeyrura/Bin/AgentsStack/docs/designs/orchestration/work-lifecycle/TECH_DESIGN.md`
-- **Review Date**: 2026-01-10
-- **Overall Score**: 8/10
-- **Implementation Readiness**: Ready (with minor revisions)
+- **Review Date**: 2026-01-10 (Re-verification)
+- **Previous Score**: 8/10
+- **Overall Score**: 9.5/10
+- **Implementation Readiness**: Ready for Implementation
+
+---
+
+## Re-Verification Summary
+
+This is a re-verification of the Work-Lifecycle technical design after addressing the gaps identified in the initial review.
+
+### Previously Identified Gaps - Resolution Status
+
+| Gap ID | Description | Status | Evidence |
+|--------|-------------|--------|----------|
+| W1 | Use of 'any' types in transition payloads | RESOLVED | Lines 237-411: Complete `TransitionPayloadMap` with typed payloads for all 21 triggers |
+| W2 | Direct MongoDB access instead of DatabaseClient | RESOLVED | Lines 32-78: DatabaseClient extensions documented; all code uses `this.db.*` methods |
 
 ---
 
 ## REQUIREMENTS.md Coverage Check
 
-**CRITICAL NOTE**: REQUIREMENTS.md does not exist for this design. However, since this is Phase 3.2 in the delivery sequence, the technical design serves as the specification itself. The design is comprehensive and self-contained.
+**Note**: REQUIREMENTS.md does not exist for this module. Per the delivery sequence, this technical design serves as the specification. All flows defined in the design scope are fully covered.
 
 | Flow (from TECH_DESIGN.md Scope) | Fully Specified? | Components Defined | Gaps |
 |----------------------------------|------------------|-------------------|------|
-| 16 work item states | YES | WorkItemStatus type | None |
-| State transition rules and guards | YES | TRANSITIONS array | None |
-| Status update logic | YES | WorkLifecycle.transition() | None |
-| Parallel execution coordination | YES | executeParallel(), checkDependencies() | None |
-| Dynamic TODO spawning | YES | spawnTodos(), SPAWN_TRIGGERS | None |
-| Retry counting and limits | YES | RetryLimits, canRetry() | None |
-| User continuation flow | YES | ContinuationActionType, checkDependencyCascade() | None |
+| 16 work item states | YES | `WorkItemStatus` type (lines 83-100) | None |
+| State transition rules and guards | YES | `TRANSITIONS` array with typed guards (lines 534-958) | None |
+| Status update logic | YES | `WorkLifecycle.transition()` (lines 437-503) | None |
+| Parallel execution coordination | YES | `executeParallel()`, `checkDependencies()` (lines 1077-1190) | None |
+| Dynamic TODO spawning | YES | `spawnTodos()`, `SPAWN_TRIGGERS` (lines 1196-1406) | None |
+| Retry counting and limits | YES | `RetryLimits`, `canRetry()` (lines 1546-1572) | None |
+| User continuation flow | YES | `ContinuationActionType`, action types (lines 1410-1993) | None |
 
 ---
 
 ## Detailed Verification Results
 
-### 1. WorkItemStatus Type Alignment
+### 1. Type Safety - Transition Payloads (W1 Resolution)
 
-**Description**: Verify the 16-state type matches Core Data Structure
+**Description**: Verify all 'any' types have been replaced with proper typed payloads
 **Result**: VERIFIED
-**Files Reviewed**:
-- `/Users/sergeyrura/Bin/AgentsStack/types/data.ts` (lines 234-250)
-- TECH_DESIGN.md (lines 27-43)
+**Location**: TECH_DESIGN.md lines 237-411
 
-**Finding**: The WorkItemStatus type is already defined in `types/data.ts` and matches exactly with the TECH_DESIGN.md specification. All 16 states are present:
-- pending, ready, prompting, dispatched, polling, stale, received, verifying, verified, retry_pending, rejected, reassigning, paying, payment_retry, completed, failed
-
-### 2. State Transition Definitions
-
-**Description**: Review transition rules, triggers, guards, and execution logic
-**Result**: VERIFIED
-**Location**: TECH_DESIGN.md lines 152-518
-
-**Finding**: The design provides comprehensive transition definitions:
-- 17 distinct transitions covering all state changes
-- Each transition has: from, to, trigger, optional guard, guardName, execute function
-- Guards use proper type-safe checks
-- Execute functions return Partial<WorkItem> updates
-
-### 3. WorkLifecycle Interface
-
-**Description**: Verify the interface aligns with existing DatabaseClient pattern
-**Result**: VERIFIED
-**Files Reviewed**:
-- `/Users/sergeyrura/Bin/AgentsStack/lib/db/database-client.ts`
-- TECH_DESIGN.md lines 928-944
-
-**Finding**: The WorkLifecycle interface follows the same pattern as DatabaseClient:
-- Async methods returning Promises
-- Clear method signatures with proper types
-- Consistent naming conventions (camelCase for methods)
-
-### 4. Type Safety Analysis
-
-**Description**: Check for 'any' types and proper TypeScript usage
-**Result**: ISSUE FOUND
-
-**Finding**: The TECH_DESIGN.md contains `any` types that must be replaced:
-- Line 193: `payload?: any` in transition method
-- Line 249: `guard?: (work: WorkItem, payload?: any) => boolean`
-- Line 251: `execute: (work: WorkItem, payload?: any) => Partial<WorkItem>`
-- Line 777: `condition: (output: any) => ...`
-
-These MUST be replaced with proper typed payloads during implementation.
-
-### 5. Integration with Existing Codebase
-
-**Description**: Verify compatibility with existing orchestration state
-**Result**: VERIFIED
-**Files Reviewed**:
-- `/Users/sergeyrura/Bin/AgentsStack/lib/orchestration/state.ts`
-- `/Users/sergeyrura/Bin/AgentsStack/lib/orchestration/graph.ts`
-
-**Finding**: The existing LangGraph state (`JobStateAnnotation`) tracks:
-- `completed_actions: number[]`
-- `failed_actions: number[]`
-
-The WorkLifecycle module will need to coordinate with these state fields. The design correctly references event emission to ORCH_GRAPH.
-
-### 6. Database Operations
-
-**Description**: Verify database access patterns match DatabaseClient
-**Result**: ISSUE FOUND
-
-**Finding**: The TECH_DESIGN uses direct MongoDB syntax (`db.work_items.findOne`, `db.work_items.updateOne`) rather than the DatabaseClient interface methods. For example:
-- Line 197: `await db.work_items.findOne({ work_id })` should use `databaseClient.getWorkItem(work_id)`
-- Line 215: `await db.work_items.updateOne(...)` should use existing update methods
-
-The implementation should use the existing `DatabaseClient` interface from `/Users/sergeyrura/Bin/AgentsStack/lib/db/database-client.ts`.
-
-### 7. Missing DatabaseClient Methods
-
-**Description**: Identify methods needed that don't exist in DatabaseClient
-**Result**: GAPS IDENTIFIED
-
-**Finding**: The following methods are needed but not in DatabaseClient:
-1. `updateWorkItemPartial(work_id: string, updates: Partial<WorkItem>)` - for transition updates
-2. `getWorkItemsByJobAndActionItemIds(job_id: string, action_item_ids: number[])` - for dependency checking
-3. `updatePlanActionItems(plan_id: string, action_items: ActionItem[])` - for spawning TODOs
-
-### 8. Parallel Execution Design
-
-**Description**: Review parallel execution strategy
-**Result**: VERIFIED
-**Location**: TECH_DESIGN.md lines 607-694
-
-**Finding**: The design correctly uses `Promise.allSettled` for parallel execution, handles both fulfilled and rejected results, and includes proper error propagation. This is a sound pattern.
-
-### 9. Dynamic TODO Spawning
-
-**Description**: Review spawning implementation and triggers
-**Result**: VERIFIED
-**Location**: TECH_DESIGN.md lines 698-796
-
-**Finding**: The spawning mechanism is well-designed:
-- SpawnRequest interface is properly typed
-- New IDs are generated incrementally
-- Events are emitted for spawned TODOs
-- Triggers are extensible via SPAWN_TRIGGERS array
-
-### 10. User Continuation Flow
-
-**Description**: Review continuation action types and state handling
-**Result**: VERIFIED
-**Location**: TECH_DESIGN.md lines 800-1246
-
-**Finding**: The continuation flow is comprehensive:
-- 4 action types: CREATE_NEW, MODIFY_EXISTING, REPLACE_EXISTING, RERUN_WITH_CONTEXT
-- Each type has clear state handling logic
-- Version tracking is properly designed
-- Dependency cascade is handled
-
-### 11. Event Emission
-
-**Description**: Verify events are properly defined
-**Result**: VERIFIED
-**Location**: TECH_DESIGN.md lines 902-911
-
-**Finding**: WorkLifecycleEvent union type covers:
-- work:created
-- work:status_changed
-- work:retry
-- work:failed
-- todo:spawned
-
-All necessary events for coordination with ORCH_GRAPH are defined.
-
-### 12. Retry Limits Configuration
-
-**Description**: Review retry configuration and limits
-**Result**: VERIFIED
-**Location**: TECH_DESIGN.md lines 869-898
-
-**Finding**: RetryLimits interface and DEFAULT_LIMITS are properly defined:
-- verification_retries: 3
-- stale_retries: 3
-- payment_retries: 3
-- agent_reassignments: 2
-
-The canRetry function correctly checks all limit types.
-
----
-
-## Identified Gaps
-
-### Gap #1: Use of 'any' Types
-
-**Severity**: High
-**Description**: The design uses `any` type in several places
-**Reasoning**: This violates the MANDATORY type safety requirement
-**Impact**: Type safety is compromised; runtime errors could occur
-**Resolution**: Define specific payload interfaces for each transition trigger:
+**Finding**: The design now includes a comprehensive type system for transition payloads:
 
 ```typescript
-interface TransitionPayload {
+// Line 258-280: TransitionTrigger union type (21 triggers)
+type TransitionTrigger =
+  | "dependencies_met"
+  | "picked_up"
+  | "prompt_generated"
+  // ... all 21 triggers
+
+// Lines 286-405: Individual payload interfaces
+interface PromptGeneratedPayload { ... }
+interface AsyncResponsePayload { ... }
+interface SyncResponsePayload { ... }
+interface VerificationPayload { ... }
+// ... etc
+
+// Lines 382-405: Type map connecting triggers to payloads
+interface TransitionPayloadMap {
   dependencies_met: undefined;
   picked_up: undefined;
-  prompt_generated: { generated_prompt: string; requirements: string[] };
-  async_response: { reference_id: string; status_url: string };
-  sync_response: { output: unknown };
-  poll_completed: { output: unknown };
-  poll_timeout: undefined;
-  // ... etc for each trigger
+  prompt_generated: PromptGeneratedPayload;
+  async_response: AsyncResponsePayload;
+  // ... all mappings
 }
 
-type PayloadFor<T extends string> = T extends keyof TransitionPayload
-  ? TransitionPayload[T]
-  : never;
+// Line 410: Helper type for payload lookup
+type PayloadFor<T extends TransitionTrigger> = TransitionPayloadMap[T];
 ```
 
-**Files Affected**: Implementation files in `lib/orchestration/lifecycle/`
+**Verification of usage**:
+- Line 447-451: `transition<T extends TransitionTrigger>(work_id: string, trigger: T, payload?: PayloadFor<T>)` - correctly typed
+- Lines 521-528: Transition interface uses typed payload: `guard?: (work: WorkItem, payload: PayloadFor<T>) => boolean`
+- Lines 562-572: Individual transitions use specific payload types: `(payload: PromptGeneratedPayload) =>`
 
----
+**RESULT: NO 'any' TYPES FOUND - GAP W1 FULLY RESOLVED**
 
-### Gap #2: Direct Database Access Instead of DatabaseClient
+### 2. DatabaseClient Usage (W2 Resolution)
 
-**Severity**: Medium
-**Description**: Design shows direct MongoDB operations instead of using DatabaseClient interface
-**Reasoning**: Breaks the abstraction layer and violates pattern adherence
-**Impact**: Inconsistent data access patterns; harder to test
-**Resolution**: Use existing DatabaseClient methods:
-- Replace `db.work_items.findOne({ work_id })` with `databaseClient.getWorkItem(work_id)`
-- Replace `db.work_items.updateOne(...)` with `databaseClient.updateWorkItemStatus(...)` or new partial update method
+**Description**: Verify all database operations use DatabaseClient methods
+**Result**: VERIFIED
+**Location**: Multiple sections
 
-**Files Affected**: All lifecycle implementation files
+**Finding**: The design now properly uses DatabaseClient:
 
----
-
-### Gap #3: Missing DatabaseClient Methods
-
-**Severity**: Medium
-**Description**: Some required database operations are not in the existing DatabaseClient interface
-**Reasoning**: Cannot implement transitions without these methods
-**Impact**: Implementation will be blocked or will need workarounds
-**Resolution**: Extend DatabaseClient interface with:
-
+**Dependencies Section (lines 26-28)**:
 ```typescript
-// Add to DatabaseClient interface
-updateWorkItemFields(work_id: string, updates: Partial<WorkItem>): Promise<void>;
-getWorkItemsByActionItemIds(job_id: string, action_item_ids: number[]): Promise<WorkItem[]>;
-pushActionItemsToPlan(plan_id: string, newItems: ActionItem[]): Promise<void>;
+// Clearly declares dependency on DatabaseClient
+import type { DatabaseClient } from "@/lib/db/database-client";
 ```
 
-**Files Affected**:
-- `/Users/sergeyrura/Bin/AgentsStack/lib/db/database-client.ts`
-- `/Users/sergeyrura/Bin/AgentsStack/lib/db/database-client-impl.ts`
+**Required Extensions Section (lines 32-78)**:
+The design explicitly documents the 3 new DatabaseClient methods needed:
+1. `updateWorkItemFields(work_id: string, updates: Partial<WorkItem>): Promise<void>`
+2. `getWorkItemsByActionItemIds(job_id: string, action_item_ids: number[]): Promise<WorkItem[]>`
+3. `pushActionItemsToPlan(plan_id: string, newItems: ActionItem[]): Promise<void>`
+
+Includes implementation notes for each method (use `$set`, `$in`, `$push` with `$each`).
+
+**WorkLifecycle Class (lines 437-503)**:
+```typescript
+class WorkLifecycle {
+  constructor(private readonly db: DatabaseClient) {}
+
+  async transition<T extends TransitionTrigger>(...) {
+    const work = await this.db.getWorkItem(work_id);  // Uses DatabaseClient
+    // ...
+    await this.db.updateWorkItemFields(work_id, {...});  // Uses DatabaseClient
+  }
+}
+```
+
+**Other functions verified**:
+- `checkDependencies()` (lines 1099-1136): Uses `db.getWorkItem()`, `db.getWorkItemsByActionItemIds()`
+- `spawnTodos()` (lines 1252-1330): Uses `db.getPlan()`, `db.pushActionItemsToPlan()`, `db.createWorkItem()`
+- `createContinuationWorkItem()` (lines 1457-1538): Uses `db.createWorkItem()`, `db.updateWorkItemFields()`
+- `checkDependencyCascade()` (lines 1915-1970): Uses `db.getWorkItem()`, `db.getPlan()`
+
+**RESULT: NO DIRECT MONGODB ACCESS - GAP W2 FULLY RESOLVED**
+
+### 3. State Machine Diagram and Table
+
+**Description**: Review state machine completeness
+**Result**: VERIFIED
+**Location**: Lines 105-233
+
+**Finding**: The ASCII diagram (lines 107-203) and transition table (lines 208-233) are comprehensive and consistent:
+- All 16 states are represented
+- All transitions are clearly labeled with triggers and guards
+- Terminal states (completed, failed) are clearly marked
+- The diagram accurately represents the transition logic
+
+### 4. Transition Definitions
+
+**Description**: Verify all transitions are properly implemented
+**Result**: VERIFIED
+**Location**: Lines 534-958
+
+**Finding**: 17 transitions are fully defined with:
+- Proper `from` and `to` states
+- Typed `trigger` values
+- Optional typed `guard` functions with `guardName`
+- Typed `execute` functions returning `Partial<WorkItem>`
+
+All transitions match the state transition table and diagram.
+
+### 5. Interface Alignment with Existing Codebase
+
+**Description**: Verify types align with existing types/data.ts
+**Result**: VERIFIED
+**Files Reviewed**:
+- `/Users/sergeyrura/Bin/AgentsStack/types/data.ts`
+- TECH_DESIGN.md
+
+**Finding**: The design correctly imports and uses existing types:
+- `WorkItem`, `WorkItemStatus` from types/data.ts (line 243-248)
+- `ActionItem`, `Agent`, `CriteriaResult`, `Plan` from types/data.ts
+- All 16 `WorkItemStatus` values match exactly between design and types/data.ts
+
+### 6. Parallel Execution Design
+
+**Description**: Review parallel execution implementation
+**Result**: VERIFIED
+**Location**: Lines 1047-1190
+
+**Finding**: Solid implementation using:
+- `Promise.allSettled` for parallel execution (line 1173)
+- Proper error handling in catch blocks (lines 1166-1170)
+- Clear result typing with `WorkExecutionResult` interface
+
+### 7. Dynamic TODO Spawning
+
+**Description**: Review spawning mechanism
+**Result**: VERIFIED
+**Location**: Lines 1196-1406
+
+**Finding**: Complete implementation:
+- `SpawnRequest` and `SpawnResult` interfaces properly typed
+- `spawnTodos()` uses DatabaseClient methods
+- `SPAWN_TRIGGERS` array is extensible
+- Events are emitted for tracking
+
+### 8. User Continuation Flow
+
+**Description**: Review continuation action types
+**Result**: VERIFIED
+**Location**: Lines 1410-1993
+
+**Finding**: Comprehensive continuation support:
+- 4 action types: CREATE_NEW, MODIFY_EXISTING, REPLACE_EXISTING, RERUN_WITH_CONTEXT
+- Each type has clear initial status and handling
+- Dependency cascade checking is included
+- Version tracking with `VersionedContextRef` interface
+
+### 9. Event System
+
+**Description**: Verify event types are complete
+**Result**: VERIFIED
+**Location**: Lines 1579-1584
+
+**Finding**: `WorkLifecycleEvent` union type covers all necessary events:
+- `work:created`
+- `work:status_changed`
+- `work:retry`
+- `work:failed`
+- `todo:spawned`
+
+Plus `ContinuationEvent` type for continuation-specific events (lines 1987-1993).
+
+### 10. Interface Exports
+
+**Description**: Verify public interface is well-defined
+**Result**: VERIFIED
+**Location**: Lines 1600-1667
+
+**Finding**: `IWorkLifecycle` interface provides:
+- `transition()` - typed generic method
+- `getActionable()` - get ready work items
+- `canRetry()` - check retry eligibility
+- `spawnTodos()` - spawn new TODOs
+- `checkDependencies()` - dependency resolution
+- `onWorkCompleted()` - completion handler
+
+All methods are properly documented with JSDoc comments.
 
 ---
 
-### Gap #4: Existing Scaffolded Code Mismatch
+## Remaining Minor Observations
 
-**Severity**: Low
-**Description**: Existing `lib/orchestration/graph.ts` has placeholder nodes that don't integrate with WorkLifecycle
-**Reasoning**: Per the critical context, scaffolded code may be unrelated/wrong
-**Impact**: Existing code should be replaced to match this design
-**Resolution**: The existing graph.ts should be updated to call WorkLifecycle.transition() for state changes. The current placeholder implementations should be replaced.
+### Note 1: `superseded_by` Field
 
-**Files Affected**: `/Users/sergeyrura/Bin/AgentsStack/lib/orchestration/graph.ts`
+**Severity**: Low (Documentation Note)
+**Description**: The `markSuperseded()` function (lines 1810-1824) references `superseded_by` and `superseded_at` fields that would need to be added to the `WorkItem` type.
+**Impact**: Minor type extension needed during implementation
+**Resolution**: Add optional fields to WorkItem type or track in Job's versions array (as noted in design comments)
 
----
+### Note 2: `created_at` Field
 
-### Gap #5: File Location Not Specified
-
-**Severity**: Low
-**Description**: Design doesn't specify exact file paths for implementation
-**Reasoning**: DELIVERY_SEQUENCE.md specifies file locations
-**Impact**: None - file locations are defined in DELIVERY_SEQUENCE.md
-**Resolution**: Use paths from DELIVERY_SEQUENCE.md:
-- `lib/orchestration/lifecycle/state-machine.ts`
-- `lib/orchestration/lifecycle/transitions.ts`
-- `lib/orchestration/lifecycle/parallel.ts`
-- `lib/orchestration/lifecycle/types.ts`
-- `lib/orchestration/lifecycle/index.ts`
-
-**Files Affected**: New files to be created
-
----
-
-## Recommendations
-
-### Immediate Actions (Must Fix Before Implementation)
-
-1. **Replace `any` types with specific payload interfaces**
-   - Define TransitionPayload type map
-   - Create type-safe transition signatures
-
-2. **Create DatabaseClient extension**
-   - Add `updateWorkItemFields()` method
-   - Add `getWorkItemsByActionItemIds()` method
-   - Add `pushActionItemsToPlan()` method
-
-### Improvements (Should Consider)
-
-1. **Add JSDoc documentation** to all public interfaces for better developer experience
-
-2. **Consider using XState or similar** for state machine instead of hand-rolled implementation
-   - Pro: Built-in visualization, guards, actions
-   - Con: Additional dependency
-   - Decision: Hand-rolled is acceptable for this scope
-
-3. **Add unit test specifications** for each transition
-   - Cover happy path and all guard conditions
-   - Test parallel execution with various dependency graphs
-
-### Future Considerations (Nice to Have)
-
-1. **State machine visualization** - Generate state diagram from TRANSITIONS array
-2. **Transition history logging** - For debugging and audit trail
-3. **Metrics collection** - Track transition times, retry rates
+**Severity**: Low (Documentation Note)
+**Description**: `createWorkItem()` is called with `Omit<WorkItem, "created_at">` in DatabaseClient, but the design doesn't show the omission.
+**Impact**: None - implementation will follow DatabaseClient pattern
+**Resolution**: Implementation will naturally handle this as per DatabaseClient interface
 
 ---
 
@@ -313,20 +262,22 @@ pushActionItemsToPlan(plan_id: string, newItems: ActionItem[]): Promise<void>;
 
 **Pattern & Type Safety (CRITICAL)**
 
-- [ ] **NO 'any' types used anywhere in the design** - FAILED (4 instances found)
-- [x] General architecture matches existing codebase patterns
-- [x] Naming conventions follow existing standards (camelCase, WorkItem prefix)
-- [x] Existing types (WorkItemStatus) are reused from types/data.ts
+- [x] **NO 'any' types used anywhere in the design** - PASSED (previously failed)
+- [x] **ALL patterns match existing codebase patterns** - Uses DatabaseClient, proper imports
+- [x] **NO new abstractions introduced unnecessarily** - Uses existing types from types/data.ts
+- [x] **Naming conventions follow existing standards** - camelCase methods, PascalCase types
+- [x] **Existing utilities and helpers are reused** - Imports from @/types, @/lib/db
 
 **Core Requirements**
 
 - [x] All user flows mapped to design elements
 - [x] Error handling comprehensive (failed state, retry mechanisms)
-- [x] Performance implications analyzed (parallel execution)
-- [x] Testing strategy implied (guard conditions are testable)
-- [x] Integration points clarified (DATA, ORCH_GRAPH)
-- [x] Data models complete with proper TypeScript types (except payload any)
-- [x] Edge cases covered (stale polling, max retries, no alternatives)
+- [x] Performance implications analyzed (parallel execution with Promise.allSettled)
+- [x] Testing strategy implied (guards are pure functions, easily testable)
+- [x] Integration points clarified (DATA via DatabaseClient, ORCH_GRAPH via events)
+- [x] Data models complete with proper TypeScript types
+- [x] API contracts finalized with type definitions
+- [x] Edge cases covered (stale polling, max retries, no alternatives, payment failures)
 - [x] No over-engineering detected
 
 ---
@@ -335,32 +286,54 @@ pushActionItemsToPlan(plan_id: string, newItems: ActionItem[]): Promise<void>;
 
 | Category | Score | Notes |
 |----------|-------|-------|
-| Pattern Adherence | 1.5/2 | Uses direct DB syntax instead of DatabaseClient |
-| Type Safety | 1/2 | Contains 4 'any' types that must be fixed |
+| Flow Coverage | 3/3 | All flows fully specified |
+| Pattern Adherence | 2/2 | Uses DatabaseClient, follows existing conventions |
+| Type Safety | 2/2 | All 'any' types eliminated, comprehensive TransitionPayloadMap |
 | Completeness | 1/1 | All required functionality specified |
-| Clarity | 1/1 | Excellent diagrams and code examples |
-| Maintainability | 1/1 | Modular design, clear separation of concerns |
+| Clarity | 1/1 | Excellent diagrams, code examples, and documentation |
+| Maintainability | 0.5/1 | Minor: superseded_by field needs type extension |
 
-**Total Score: 8/10**
+**Total Score: 9.5/10**
+
+---
+
+## Comparison with Previous Score
+
+| Category | Previous | Current | Change |
+|----------|----------|---------|--------|
+| Pattern Adherence | 1.5/2 | 2/2 | +0.5 (DatabaseClient usage fixed) |
+| Type Safety | 1/2 | 2/2 | +1.0 (All 'any' types eliminated) |
+| Completeness | 1/1 | 1/1 | - |
+| Clarity | 1/1 | 1/1 | - |
+| Maintainability | 1/1 | 0.5/1 | -0.5 (Minor field extension needed) |
+| **Total** | **8/10** | **9.5/10** | **+1.5** |
 
 ---
 
 ## Final Verdict
 
-**Approved for Implementation with Required Revisions**
+**APPROVED FOR IMPLEMENTATION**
 
-The technical design is comprehensive, well-structured, and covers all necessary functionality for the work lifecycle state machine. The design correctly builds on the Core Data Structure foundation and provides clear interfaces for integration with other orchestration modules.
+The technical design has successfully addressed all critical gaps from the initial review:
 
-**Before implementation begins:**
+1. **W1 (Typed Payloads)**: The design now includes a comprehensive `TransitionPayloadMap` interface with typed payloads for all 21 transition triggers. The generic `transition<T>()` method properly uses `PayloadFor<T>` for type-safe payload access. **NO 'any' TYPES REMAIN**.
 
-1. **REQUIRED**: Define typed payload interfaces to replace all `any` types
-2. **REQUIRED**: Extend DatabaseClient interface with missing methods
-3. **REQUIRED**: Use DatabaseClient methods instead of direct MongoDB operations
+2. **W2 (DatabaseClient Usage)**: All database operations now use `DatabaseClient` methods. The design includes a clear "Required DatabaseClient Extensions" section documenting the 3 new methods needed, with implementation notes. The `WorkLifecycle` class receives `DatabaseClient` via constructor injection.
 
-**During implementation:**
+**Implementation Notes**:
 
-1. Create files in the locations specified by DELIVERY_SEQUENCE.md
-2. The existing scaffolded code in `lib/orchestration/graph.ts` should be updated to integrate with WorkLifecycle
-3. Export WorkLifecycle and all types from `lib/orchestration/lifecycle/index.ts`
+1. Before implementing this module, add the 3 new methods to `lib/db/database-client.ts`:
+   - `updateWorkItemFields()`
+   - `getWorkItemsByActionItemIds()`
+   - `pushActionItemsToPlan()`
 
-The design demonstrates strong understanding of state machine patterns and provides a solid foundation for reliable work item execution management.
+2. Consider adding optional `superseded_by?: string` and `superseded_at?: Date` fields to `WorkItem` type for continuation support (or use Job's versions array as alternative).
+
+3. Create files in the locations specified by DELIVERY_SEQUENCE.md:
+   - `lib/orchestration/lifecycle/state-machine.ts`
+   - `lib/orchestration/lifecycle/transitions.ts`
+   - `lib/orchestration/lifecycle/parallel.ts`
+   - `lib/orchestration/lifecycle/types.ts`
+   - `lib/orchestration/lifecycle/index.ts`
+
+The design is comprehensive, well-typed, and ready for implementation.

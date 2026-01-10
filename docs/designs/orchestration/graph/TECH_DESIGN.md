@@ -172,9 +172,88 @@ function calculateCostFromUsage(
 
 ### Internal Agent LLM Calls
 
+Each LLM call returns both the parsed output AND the operation tracking data.
+Node functions are responsible for including the operation in their state update.
+
 ```typescript
 // Planning Agent uses OpenRouter
-async function invokePlanningLLM(input: PlanningAgentInput): Promise<PlanningAgentOutput> {
+// Returns both data and operation - caller must include operation in state update
+async function invokePlanningLLM(
+  input: PlanningAgentInput
+): Promise<LLMInvokeResult<PlanningAgentOutput>> {
+  return invokeLLM<PlanningAgentOutput>(
+    "planning_agent",
+    [
+      { role: "system", content: PLANNING_AGENT_SYSTEM_PROMPT },
+      { role: "user", content: formatPlanningInput(input) }
+    ],
+    { response_format: { type: "json_object" } }
+  );
+}
+
+// Plan Verifier uses OpenRouter
+async function invokePlanVerifierLLM(
+  input: PlanVerifierInput
+): Promise<LLMInvokeResult<PlanVerification>> {
+  return invokeLLM<PlanVerification>(
+    "plan_verifier",
+    [
+      { role: "system", content: PLAN_VERIFIER_SYSTEM_PROMPT },
+      { role: "user", content: formatVerifierInput(input) }
+    ],
+    { response_format: { type: "json_object" } }
+  );
+}
+
+// Prompt Agent uses OpenRouter (faster model)
+async function invokePromptLLM(
+  input: PromptAgentInput
+): Promise<LLMInvokeResult<PromptAgentOutput>> {
+  return invokeLLM<PromptAgentOutput>(
+    "prompt_agent",
+    [
+      { role: "system", content: PROMPT_AGENT_SYSTEM_PROMPT },
+      { role: "user", content: formatPromptInput(input) }
+    ],
+    { response_format: { type: "json_object" }, temperature: 0.3 }
+  );
+}
+
+// Generate unique operation ID for cost tracking
+// Uses nanoid for compact, URL-safe unique IDs
+import { nanoid } from "nanoid";
+
+function generateOperationId(): string {
+  return `op_${nanoid(12)}`;  // e.g., "op_V1StGXR8_Z5j"
+}
+
+// Helper to store operation - returns updated token_usage array for state update
+// This is NOT a side-effect function - it returns the new array to be included in node output
+function appendOperation(
+  currentUsage: LLMOperation[],
+  operation: LLMOperation
+): LLMOperation[] {
+  return [...currentUsage, operation];
+}
+
+// Example usage in a node function:
+// The node returns the updated token_usage array as part of its Partial<GraphState> output
+// LangGraph merges this into the state automatically
+//
+// async function planningAgentNode(state: GraphState): Promise<Partial<GraphState>> {
+//   const result = await invokePlanningLLM(input);
+//   return {
+//     plan: result.data,
+//     token_usage: appendOperation(state.token_usage, result.operation),
+//     reasoning: "Created plan..."
+//   };
+// }
+
+// For convenience, wrap LLM invoke functions to track operations automatically
+async function invokePlanningLLMWithTracking(
+  state: GraphState,
+  input: PlanningAgentInput
+): Promise<{ output: PlanningAgentOutput; token_usage: LLMOperation[] }> {
   const result = await invokeLLM<PlanningAgentOutput>(
     "planning_agent",
     [
@@ -184,46 +263,39 @@ async function invokePlanningLLM(input: PlanningAgentInput): Promise<PlanningAge
     { response_format: { type: "json_object" } }
   );
 
-  // Store operation for cost tracking
-  storeOperation(input.job_id, result.operation);
-
-  return result.data;
+  return {
+    output: result.data,
+    token_usage: appendOperation(state.token_usage, result.operation)
+  };
 }
 
-// Plan Verifier uses OpenRouter
-async function invokePlanVerifierLLM(input: PlanVerifierInput): Promise<PlanVerification> {
-  const result = await invokeLLM<PlanVerification>(
-    "plan_verifier",
-    [
-      { role: "system", content: PLAN_VERIFIER_SYSTEM_PROMPT },
-      { role: "user", content: formatVerifierInput(input) }
-    ],
-    { response_format: { type: "json_object" } }
-  );
+// Helper to compute totals from operations array (for job summary/billing)
+function computeTokenUsageTotals(operations: LLMOperation[]): {
+  total_cost: number;
+  total_prompt_tokens: number;
+  total_completion_tokens: number;
+  by_operation_type: Record<string, { cost: number; count: number }>;
+} {
+  const totals = {
+    total_cost: 0,
+    total_prompt_tokens: 0,
+    total_completion_tokens: 0,
+    by_operation_type: {} as Record<string, { cost: number; count: number }>
+  };
 
-  storeOperation(input.job_id, result.operation);
-  return result.data;
-}
+  for (const op of operations) {
+    totals.total_cost += op.total_cost;
+    totals.total_prompt_tokens += op.native_tokens_prompt ?? 0;
+    totals.total_completion_tokens += op.native_tokens_completion ?? 0;
 
-// Prompt Agent uses OpenRouter (faster model)
-async function invokePromptLLM(input: PromptAgentInput): Promise<PromptAgentOutput> {
-  const result = await invokeLLM<PromptAgentOutput>(
-    "prompt_agent",
-    [
-      { role: "system", content: PROMPT_AGENT_SYSTEM_PROMPT },
-      { role: "user", content: formatPromptInput(input) }
-    ],
-    { response_format: { type: "json_object" }, temperature: 0.3 }
-  );
+    if (!totals.by_operation_type[op.operation_type]) {
+      totals.by_operation_type[op.operation_type] = { cost: 0, count: 0 };
+    }
+    totals.by_operation_type[op.operation_type].cost += op.total_cost;
+    totals.by_operation_type[op.operation_type].count += 1;
+  }
 
-  storeOperation(input.job_id, result.operation);
-  return result.data;
-}
-
-// Helper to store operation in GraphState
-function storeOperation(job_id: string, operation: LLMOperation): void {
-  // This is handled by the graph state - operations are appended to token_usage
-  // The withTracing wrapper handles this automatically
+  return totals;
 }
 ```
 
@@ -563,7 +635,10 @@ workflow.addConditionalEdges("plan_verifier", planVerifierRouter, {
   "max_attempts_exceeded": END        // Terminal failure
 });
 
-workflow.addEdge("prompt_agent", "dispatch_and_poll");  // external call
+// NOTE: dispatch_and_poll node is implemented by ORCH_INTEGRATIONS module (Phase 3.4)
+// This module imports the node function: import { dispatchAndPollNode } from "../integrations/dispatch";
+// The node handles: HTTP dispatch to external agent, polling for completion, result retrieval
+workflow.addEdge("prompt_agent", "dispatch_and_poll");
 workflow.addEdge("dispatch_and_poll", "galileo_verify");
 
 workflow.addConditionalEdges("galileo_verify", verificationRouter, {
@@ -811,14 +886,18 @@ async function planningAgentNode(state: GraphState): Promise<Partial<GraphState>
     verification_feedback: state.plan_verification_feedback  // Issues to address
   };
 
-  const plan = await invokePlanningLLM(planInput);
+  // LLM call returns both data and operation for cost tracking
+  const result = await invokePlanningLLM(planInput);
 
+  // Return updated state including the new operation in token_usage
+  // LangGraph merges this partial state into the full GraphState
   return {
-    plan,
+    plan: result.data,
+    token_usage: appendOperation(state.token_usage, result.operation),
     plan_verification_feedback: undefined,  // Clear feedback after use
     reasoning: isRetry
       ? `Revised plan addressing: ${state.plan_verification_feedback?.join(", ")}`
-      : `Created plan with ${plan.action_items.length} TODOs`,
+      : `Created plan with ${result.data.action_items.length} TODOs`,
     decision: "Plan created, sending to verification"
   };
 }
@@ -886,19 +965,27 @@ const MAX_PLAN_VERIFICATION_ATTEMPTS = 3;
 async function planVerifierNode(state: GraphState): Promise<Partial<GraphState>> {
   // MANDATORY GATE - validates plan before execution
 
-  const verification = await invokePlanVerifierLLM({
+  // LLM call returns both verification result and operation for cost tracking
+  const result = await invokePlanVerifierLLM({
     plan: state.plan,
     available_agents: state.available_agents,
     available_templates: state.available_templates,
     budget: state.budget
   });
 
+  const verification = result.data;
   const attempts = (state.plan_verification_attempts || 0) + 1;
+
+  // Base state update - always includes token_usage
+  const baseUpdate = {
+    plan_verification: verification,
+    plan_verification_attempts: attempts,
+    token_usage: appendOperation(state.token_usage, result.operation)
+  };
 
   if (verification.result === "PASS") {
     return {
-      plan_verification: verification,
-      plan_verification_attempts: attempts,
+      ...baseUpdate,
       reasoning: "Plan validated successfully",
       decision: "pass"
     };
@@ -907,8 +994,7 @@ async function planVerifierNode(state: GraphState): Promise<Partial<GraphState>>
   // FAIL case - check if max attempts exceeded
   if (attempts >= MAX_PLAN_VERIFICATION_ATTEMPTS) {
     return {
-      plan_verification: verification,
-      plan_verification_attempts: attempts,
+      ...baseUpdate,
       reasoning: `Plan verification failed after ${attempts} attempts: ${verification.issues.join(", ")}`,
       decision: "max_attempts_exceeded",
       error: "Planning failed: max verification attempts exceeded"
@@ -917,8 +1003,7 @@ async function planVerifierNode(state: GraphState): Promise<Partial<GraphState>>
 
   // FAIL with retries remaining - store feedback for Planning Agent
   return {
-    plan_verification: verification,
-    plan_verification_attempts: attempts,
+    ...baseUpdate,
     plan_verification_feedback: verification.issues,  // Pass feedback to Planning Agent
     reasoning: `Plan rejected (attempt ${attempts}/${MAX_PLAN_VERIFICATION_ATTEMPTS}): ${verification.issues.join(", ")}`,
     decision: "fail"
@@ -936,7 +1021,8 @@ async function promptAgentNode(state: GraphState): Promise<Partial<GraphState>> 
   const actionItem = state.plan.action_items.find(a => a.id === workItem.action_item_id);
   const template = state.available_templates.find(t => t.template_id === actionItem.template_id);
 
-  const promptOutput = await invokePromptLLM({
+  // LLM call returns both prompt output and operation for cost tracking
+  const result = await invokePromptLLM({
     action_item: actionItem,
     template,
     context: {
@@ -950,9 +1036,10 @@ async function promptAgentNode(state: GraphState): Promise<Partial<GraphState>> 
   return {
     current_work_items: state.current_work_items.map(w =>
       w.work_id === workItem.work_id
-        ? { ...w, generated_prompt: promptOutput.generated_prompt, requirements: promptOutput.requirements }
+        ? { ...w, generated_prompt: result.data.generated_prompt, requirements: result.data.requirements }
         : w
     ),
+    token_usage: appendOperation(state.token_usage, result.operation),
     reasoning: `Generated prompt using template ${template.template_id}`,
     decision: "Prompt ready for dispatch"
   };

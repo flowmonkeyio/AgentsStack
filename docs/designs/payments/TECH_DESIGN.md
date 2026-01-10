@@ -201,11 +201,13 @@ async function executePayment(request: PaymentRequest): Promise<PaymentResponse>
       tx_hash: tx.hash
     };
 
-  } catch (error) {
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    const isRetryable = error instanceof Error && isRetryableError(error);
     return {
       success: false,
-      error: error.message,
-      retry_suggested: isRetryableError(error)
+      error: message,
+      retry_suggested: isRetryable
     };
   }
 }
@@ -378,60 +380,164 @@ interface TransactionRecord {
 
 ## Budget Management Integration
 
-After payment confirmation:
+### Transaction Lifecycle
+
+Transactions follow a clear lifecycle with distinct creation and confirmation steps:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  TRANSACTION LIFECYCLE                                                       │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  1. initiatePayment()       → Creates Transaction (status: "pending")       │
+│                             → Updates WorkItem.payment.status = "processing"│
+│                                                                              │
+│  2. executePayment()        → Executes x402 transfer                        │
+│                             → Returns tx_hash on success                    │
+│                                                                              │
+│  3. onPaymentConfirmed()    → UPDATES existing Transaction (status: "confirmed")
+│                             → Updates WorkItem.payment with tx_hash         │
+│                             → Updates Job budget                            │
+│                             → Updates Agent stats                           │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Step 1: Initiate Payment (Create Transaction)
+
+Called before executing the actual payment. Creates the transaction record in pending state.
 
 ```typescript
-async function onPaymentConfirmed(payment: PaymentResponse, request: PaymentRequest) {
-  // 1. Update work item
-  await db.work_items.updateOne(
-    { work_id: request.work_id },
-    {
-      $set: {
-        "payment.status": "confirmed",
-        "payment.tx_hash": payment.tx_hash,
-        "payment.confirmed_at": new Date()
-      }
-    }
-  );
+interface InitiatePaymentParams {
+  work_id: string;
+  job_id: string;
+  user_id: string;
+  agent_id: string;
+  amount: number;
+  reason: string;
+}
 
-  // 2. Update job budget
-  await db.jobs.updateOne(
-    { job_id: request.job_id },
-    {
-      $inc: {
-        "budget.spent": request.amount,
-        "budget.remaining": -request.amount
-      }
-    }
-  );
+async function initiatePayment(
+  db: DatabaseClient,
+  params: InitiatePaymentParams
+): Promise<{ tx_id: string }> {
+  // 1. Get current budget for audit
+  const job = await db.getJob(params.job_id);
+  if (!job) {
+    throw new Error(`Job not found: ${params.job_id}`);
+  }
 
-  // 3. Create transaction record
-  await db.transactions.insertOne({
-    tx_id: generateTxId(),
-    job_id: request.job_id,
-    work_id: request.work_id,
-    user_id: request.user_id,
-    agent_id: request.agent_id,
-    amount: request.amount,
+  // 2. Create transaction record (pending)
+  const tx_id = generateTxId();
+  await db.createTransaction({
+    tx_id,
+    job_id: params.job_id,
+    work_id: params.work_id,
+    user_id: params.user_id,
+    agent_id: params.agent_id,
+    amount: params.amount,
     currency: "USDC",
     protocol: "x402",
-    tx_hash: payment.tx_hash,
-    status: "confirmed",
+    tx_hash: "",  // Empty until confirmed
+    status: "pending",
     audit: {
-      reason: request.reason,
+      reason: params.reason,
       approved_by: "main_agent",
-      budget_before: currentBudget.spent,
-      budget_after: currentBudget.spent + request.amount
+      budget_before: job.budget.spent,
+      budget_after: job.budget.spent + params.amount
     },
-    created_at: new Date(),
-    confirmed_at: new Date()
+    confirmed_at: null
   });
 
+  // 3. Update work item payment status to processing
+  await db.updateWorkItemPayment(params.work_id, {
+    status: "processing",
+    amount: params.amount,
+    tx_hash: null,
+    original_price: params.amount,
+    negotiated_price: params.amount,
+    error: null,
+    retry_count: 0,
+    initiated_at: new Date(),
+    confirmed_at: null
+  });
+
+  return { tx_id };
+}
+```
+
+### Step 2: On Payment Confirmed (Update Existing Transaction)
+
+Called after `executePayment()` succeeds. **Updates the existing transaction** - does NOT create a new one.
+
+```typescript
+interface PaymentConfirmationParams {
+  tx_id: string;         // Transaction ID from initiatePayment()
+  tx_hash: string;       // Blockchain transaction hash from executePayment()
+  work_id: string;
+  job_id: string;
+  agent_id: string;
+  amount: number;
+}
+
+async function onPaymentConfirmed(
+  db: DatabaseClient,
+  params: PaymentConfirmationParams
+): Promise<void> {
+  const now = new Date();
+
+  // 1. UPDATE existing transaction (not create new)
+  await db.updateTransactionStatus(params.tx_id, "confirmed");
+  await db.updateTransactionTxHash(params.tx_id, params.tx_hash);
+
+  // 2. Update work item payment
+  await db.updateWorkItemPayment(params.work_id, {
+    status: "confirmed",
+    tx_hash: params.tx_hash,
+    confirmed_at: now,
+    error: null
+  });
+
+  // 3. Update job budget
+  const job = await db.getJob(params.job_id);
+  if (job) {
+    await db.updateJobBudget(params.job_id, {
+      ...job.budget,
+      spent: job.budget.spent + params.amount,
+      remaining: job.budget.remaining - params.amount
+    });
+  }
+
   // 4. Update agent stats
-  await db.agents.updateOne(
-    { agent_id: request.agent_id },
-    { $inc: { "stats.jobs_completed": 1 } }
-  );
+  await db.updateAgentStats(params.agent_id, {
+    jobs_completed: 1  // Incremented via $inc internally
+  });
+
+  // 5. Update work item status to completed
+  await db.updateWorkItemStatus(params.work_id, "completed");
+}
+```
+
+### Step 3: On Payment Failed
+
+Called when `executePayment()` fails after all retries.
+
+```typescript
+async function onPaymentFailed(
+  db: DatabaseClient,
+  params: { tx_id: string; work_id: string; error: string }
+): Promise<void> {
+  // 1. Update transaction status
+  await db.updateTransactionStatus(params.tx_id, "failed");
+
+  // 2. Update work item payment
+  await db.updateWorkItemPayment(params.work_id, {
+    status: "failed",
+    error: params.error
+  });
+
+  // 3. Update work item status
+  await db.updateWorkItemStatus(params.work_id, "failed");
 }
 ```
 
@@ -444,9 +550,74 @@ async function onPaymentConfirmed(payment: PaymentResponse, request: PaymentRequ
 | **DATA** | Store transactions, update budgets | `DatabaseClient` |
 
 **External dependencies:**
-- Coinbase CDP SDK
-- x402 SDK
+- Coinbase CDP SDK (`@coinbase/cdp-sdk`)
+- x402 SDK (`@coinbase/x402`)
 - Base network (Ethereum L2)
+
+### Required DatabaseClient Extensions
+
+The Payments module requires the following methods to be added to the `DatabaseClient` interface (in `db/client.ts`):
+
+```typescript
+// ADDITIONS TO DatabaseClient INTERFACE
+// These methods must be added to support payment operations
+
+interface DatabaseClient {
+  // ... existing methods ...
+
+  // === NEW: Payment-specific methods ===
+
+  /**
+   * Update work item payment fields.
+   * Supports partial updates - only provided fields are updated.
+   */
+  updateWorkItemPayment(
+    work_id: string,
+    payment: Partial<WorkItem['payment']>
+  ): Promise<void>;
+
+  /**
+   * Update transaction tx_hash after blockchain confirmation.
+   * Separate from updateTransactionStatus for atomic updates.
+   */
+  updateTransactionTxHash(tx_id: string, tx_hash: string): Promise<void>;
+}
+```
+
+**Implementation notes:**
+
+```typescript
+// db/client.ts - Implementation additions
+
+async updateWorkItemPayment(
+  work_id: string,
+  payment: Partial<NonNullable<WorkItem['payment']>>
+): Promise<void> {
+  const updateFields: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(payment)) {
+    if (value !== undefined) {
+      updateFields[`payment.${key}`] = value;
+    }
+  }
+
+  await this.db.collection('work_items').updateOne(
+    { work_id },
+    { $set: updateFields }
+  );
+}
+
+async updateTransactionTxHash(tx_id: string, tx_hash: string): Promise<void> {
+  await this.db.collection('transactions').updateOne(
+    { tx_id },
+    {
+      $set: {
+        tx_hash,
+        confirmed_at: new Date()
+      }
+    }
+  );
+}
+```
 
 ---
 
@@ -474,12 +645,140 @@ interface PaymentClient {
 ### Factory
 
 ```typescript
-function createPaymentClient(config: {
+interface PaymentClientConfig {
   cdpApiKey: string;
   cdpApiSecret: string;
   network: "base-mainnet" | "base-sepolia";
-}): PaymentClient;
+}
+
+function createPaymentClient(config: PaymentClientConfig): PaymentClient;
 ```
+
+### Factory Implementation
+
+The `createPaymentClient()` factory returns a `PaymentClient` implementation that wraps the CDP and x402 SDKs.
+
+```typescript
+// lib/payments/client.ts
+
+import { CoinbaseCDP } from '@coinbase/cdp-sdk';
+import { x402 } from '@coinbase/x402';
+
+class PaymentClientImpl implements PaymentClient {
+  private cdp: CoinbaseCDP;
+  private network: "base-mainnet" | "base-sepolia";
+
+  constructor(config: PaymentClientConfig) {
+    this.cdp = new CoinbaseCDP({
+      apiKey: config.cdpApiKey,
+      apiSecret: config.cdpApiSecret
+    });
+    this.network = config.network;
+  }
+
+  async pay(request: PaymentRequest): Promise<PaymentResponse> {
+    return executePayment(request);
+  }
+
+  async getPaymentStatus(tx_hash: string): Promise<PaymentStatus> {
+    try {
+      const status = await this.cdp.getTransactionStatus(tx_hash);
+      // Map CDP status to our PaymentStatus
+      if (status.confirmed) return "confirmed";
+      if (status.failed) return "failed";
+      return "processing";
+    } catch (error: unknown) {
+      // Transaction not found or network error
+      return "pending";
+    }
+  }
+
+  async getBalance(address: string): Promise<number> {
+    const balance = await this.cdp.getBalance({
+      address,
+      currency: "USDC",
+      network: this.network
+    });
+    return balance.amount;
+  }
+
+  validateAddress(address: string): boolean {
+    // Ethereum address validation
+    return /^0x[a-fA-F0-9]{40}$/.test(address);
+  }
+
+  async createEmbeddedWallet(user_id: string): Promise<UserWallet> {
+    const wallet = await this.cdp.createEmbeddedWallet({
+      userId: user_id,
+      network: this.network
+    });
+    return {
+      type: "embedded",
+      cdp_wallet_id: wallet.id,
+      address: wallet.address,
+      verified: true  // CDP wallets are auto-verified
+    };
+  }
+}
+
+export function createPaymentClient(config: PaymentClientConfig): PaymentClient {
+  return new PaymentClientImpl(config);
+}
+```
+
+### Default Client Initialization
+
+```typescript
+// lib/payments/index.ts
+
+let defaultClient: PaymentClient | null = null;
+
+export function getPaymentClient(): PaymentClient {
+  if (!defaultClient) {
+    defaultClient = createPaymentClient({
+      cdpApiKey: process.env.CDP_API_KEY!,
+      cdpApiSecret: process.env.CDP_API_SECRET!,
+      network: process.env.CDP_NETWORK as "base-mainnet" | "base-sepolia"
+    });
+  }
+  return defaultClient;
+}
+
+// For testing - allows injecting mock client
+export function setPaymentClient(client: PaymentClient): void {
+  defaultClient = client;
+}
+```
+
+---
+
+## File Structure
+
+```
+lib/payments/
+├── client.ts       # PaymentClientImpl + createPaymentClient()
+├── x402.ts         # x402 protocol helpers (executePayment, waitForConfirmation)
+├── wallet.ts       # Wallet utilities (validateAddress, getBalance)
+├── lifecycle.ts    # Transaction lifecycle (initiatePayment, onPaymentConfirmed, onPaymentFailed)
+├── retry.ts        # Retry logic (payWithRetry, isRetryableError)
+├── types.ts        # Type definitions (PaymentRequest, PaymentResponse, etc.)
+└── index.ts        # Public exports
+
+types/
+└── data.ts         # Core types (already exists - UserWallet types align with User.wallet)
+```
+
+### File Contents Summary
+
+| File | Exports | Purpose |
+|------|---------|---------|
+| `client.ts` | `PaymentClientImpl`, `createPaymentClient` | Main client implementation |
+| `x402.ts` | `executePayment`, `waitForConfirmation` | x402 transfer execution |
+| `wallet.ts` | `validateAddress`, `getBalance`, `isValidAddress` | Wallet utilities |
+| `lifecycle.ts` | `initiatePayment`, `onPaymentConfirmed`, `onPaymentFailed` | Transaction state management |
+| `retry.ts` | `payWithRetry`, `isRetryableError`, `RETRYABLE_ERRORS`, `FATAL_ERRORS` | Retry with backoff |
+| `types.ts` | All interfaces and types | Type definitions |
+| `index.ts` | Re-exports all public APIs | Module entry point |
 
 ---
 
@@ -538,4 +837,113 @@ function isRetryableError(error: Error): boolean {
 const network = process.env.NODE_ENV === 'production'
   ? 'base-mainnet'
   : 'base-sepolia';
+```
+
+---
+
+## Complete Payment Orchestration Example
+
+This example shows the full end-to-end payment flow as called by the Orchestration module after work verification passes.
+
+```typescript
+// Called by Orchestration module after Galileo verification passes
+
+import { DatabaseClient } from '../db/client';
+import {
+  getPaymentClient,
+  initiatePayment,
+  payWithRetry,
+  onPaymentConfirmed,
+  onPaymentFailed,
+  PaymentRequest
+} from '../lib/payments';
+
+async function processPaymentForVerifiedWork(
+  db: DatabaseClient,
+  workItem: WorkItem,
+  job: Job,
+  agent: Agent
+): Promise<{ success: boolean; error?: string }> {
+
+  // 1. Prepare payment request
+  const paymentRequest: PaymentRequest = {
+    work_id: workItem.work_id,
+    job_id: workItem.job_id,
+    user_id: job.user_id,
+    agent_id: agent.agent_id,
+    amount: workItem.agent?.price ?? 0,
+    currency: "USDC",
+    from_address: (await db.getUser(job.user_id))?.wallet.address ?? "",
+    to_address: agent.wallet,
+    reason: `Work completed, score ${workItem.verification?.score ?? 0}`
+  };
+
+  // 2. Validate addresses
+  const paymentClient = getPaymentClient();
+  if (!paymentClient.validateAddress(paymentRequest.from_address)) {
+    return { success: false, error: "Invalid user wallet address" };
+  }
+  if (!paymentClient.validateAddress(paymentRequest.to_address)) {
+    return { success: false, error: "Invalid agent wallet address" };
+  }
+
+  // 3. Initiate payment (creates transaction record)
+  const { tx_id } = await initiatePayment(db, {
+    work_id: paymentRequest.work_id,
+    job_id: paymentRequest.job_id,
+    user_id: paymentRequest.user_id,
+    agent_id: paymentRequest.agent_id,
+    amount: paymentRequest.amount,
+    reason: paymentRequest.reason
+  });
+
+  // 4. Update work item status
+  await db.updateWorkItemStatus(paymentRequest.work_id, "paying");
+
+  // 5. Execute payment with retry
+  const result = await payWithRetry(paymentRequest);
+
+  // 6. Handle result
+  if (result.success && result.tx_hash) {
+    await onPaymentConfirmed(db, {
+      tx_id,
+      tx_hash: result.tx_hash,
+      work_id: paymentRequest.work_id,
+      job_id: paymentRequest.job_id,
+      agent_id: paymentRequest.agent_id,
+      amount: paymentRequest.amount
+    });
+    return { success: true };
+  } else {
+    await onPaymentFailed(db, {
+      tx_id,
+      work_id: paymentRequest.work_id,
+      error: result.error ?? "Unknown payment error"
+    });
+    return { success: false, error: result.error };
+  }
+}
+```
+
+### Error Recovery Flow
+
+If payment fails, the Orchestration module can retry or escalate:
+
+```typescript
+// In Orchestration module
+if (!paymentResult.success) {
+  // Update work item to payment_retry state
+  await db.updateWorkItemStatus(workItem.work_id, "payment_retry");
+  await db.updateWorkItemPayment(workItem.work_id, {
+    error: paymentResult.error,
+    retry_count: (workItem.payment?.retry_count ?? 0) + 1
+  });
+
+  // Check if max retries exceeded
+  if ((workItem.payment?.retry_count ?? 0) >= 3) {
+    // Mark as permanently failed
+    await db.updateWorkItemStatus(workItem.work_id, "failed");
+    // Alert human operator (not in scope of this module)
+  }
+}
 ```

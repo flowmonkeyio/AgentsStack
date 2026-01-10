@@ -54,7 +54,7 @@ Evaluate external agent output against defined requirements using Galileo's Inst
 
 ```typescript
 interface VerifyRequest {
-  output: any;                    // Agent's output
+  output: unknown;                // Agent's output (typed as unknown for type safety)
   instructions: string[];         // Requirements to check
   context?: {
     task: string;                 // What was asked
@@ -74,6 +74,12 @@ interface VerifyResponse {
   issues: string[];               // Summary of problems
   suggestions: string[];          // How to fix (for retry)
 }
+
+// STORAGE MAPPING:
+// - score, reasoning, criteria_results, issues -> WorkItem.verification
+// - suggestions -> WorkItem.retry_context.verification_feedback.suggestions (only on retry)
+// - criteria_results.detail -> WorkItem.retry_context.verification_feedback.issues[].detail (only on retry)
+// - verified_at is set by Orchestration when storing to WorkItem.verification
 ```
 
 ### Example
@@ -174,8 +180,8 @@ interface TraceEvent {
   timestamp: Date;
   agent: "main" | "planning" | "plan_verifier" | "prompt";
   step: string;               // What step in the agent
-  input: any;                 // What the agent received
-  output: any;                // What the agent returned
+  input: unknown;             // What the agent received
+  output: unknown;            // What the agent returned
   reasoning?: string;         // Agent's thinking (if available)
   decision?: string;          // What decision was made
   duration_ms: number;        // How long it took
@@ -183,19 +189,24 @@ interface TraceEvent {
     input: number;
     output: number;
   };
-  metadata?: Record<string, any>;
+  metadata?: Record<string, unknown>;
 }
 ```
 
 ### Trace Integration with LangGraph
 
 ```typescript
+// Base interface for all traceable inputs (must have job_id)
+interface TraceableInput {
+  job_id: string;
+}
+
 // Wrap each LangGraph node with tracing
-function withTracing<T>(
+function withTracing<TInput extends TraceableInput, TOutput>(
   nodeName: string,
-  nodeFunction: (input: T) => Promise<any>
-) {
-  return async (input: T) => {
+  nodeFunction: (input: TInput) => Promise<TOutput>
+): (input: TInput) => Promise<TOutput> {
+  return async (input: TInput): Promise<TOutput> => {
     const traceId = generateTraceId();
     const startTime = Date.now();
 
@@ -204,7 +215,7 @@ function withTracing<T>(
 
       await galileo.trace({
         trace_id: traceId,
-        job_id: input.job_id,
+        job_id: input.job_id,  // TypeScript now guarantees job_id exists
         timestamp: new Date(),
         agent: nodeName,
         step: "execute",
@@ -222,7 +233,7 @@ function withTracing<T>(
         agent: nodeName,
         step: "error",
         input: sanitize(input),
-        output: { error: error.message },
+        output: { error: (error as Error).message },
         duration_ms: Date.now() - startTime
       });
       throw error;
@@ -364,6 +375,65 @@ function createGalileoClient(config: {
 
 ---
 
+## Data Alignment with Core Data Structure
+
+This section documents how Galileo types map to `types/data.ts` WorkItem fields.
+
+### VerifyResponse to WorkItem Storage
+
+When Orchestration receives a VerifyResponse, it stores data as follows:
+
+```typescript
+// VerifyResponse fields → WorkItem.verification
+// (always stored for verified/rejected outcomes)
+workItem.verification = {
+  score: verifyResponse.score,
+  reasoning: verifyResponse.reasoning,
+  criteria_results: verifyResponse.criteria_results.map(cr => ({
+    criterion: cr.criterion,
+    passed: cr.passed
+    // Note: detail is NOT stored in verification - see retry_context below
+  })),
+  issues: verifyResponse.issues,
+  verified_at: new Date()  // Set by Orchestration
+};
+
+// VerifyResponse fields → WorkItem.retry_context
+// (only populated when status becomes "retry_pending")
+if (verifyResponse.score >= 0.60 && verifyResponse.score < 0.80) {
+  workItem.retry_context = {
+    previous_attempt: workItem.attempt,
+    previous_output: workItem.output?.content,
+    verification_feedback: {
+      score: verifyResponse.score,
+      reasoning: verifyResponse.reasoning,
+      issues: verifyResponse.criteria_results
+        .filter(cr => !cr.passed)
+        .map(cr => ({
+          criterion: cr.criterion,
+          passed: cr.passed,
+          detail: cr.detail ?? ""  // detail stored here for retry feedback
+        })),
+      suggestions: verifyResponse.suggestions  // suggestions stored here
+    }
+  };
+}
+```
+
+### Key Storage Notes
+
+| VerifyResponse Field | Storage Location | When Stored |
+|---------------------|------------------|-------------|
+| `score` | `WorkItem.verification.score` | Always |
+| `reasoning` | `WorkItem.verification.reasoning` | Always |
+| `criteria_results` (basic) | `WorkItem.verification.criteria_results` | Always |
+| `criteria_results.detail` | `WorkItem.retry_context.verification_feedback.issues[].detail` | On retry only |
+| `issues` | `WorkItem.verification.issues` | Always |
+| `suggestions` | `WorkItem.retry_context.verification_feedback.suggestions` | On retry only |
+| (generated) `verified_at` | `WorkItem.verification.verified_at` | Always |
+
+---
+
 ## Galileo API Configuration
 
 ```typescript
@@ -411,7 +481,8 @@ const galileo = createGalileoClient({
 │  Store result in work_item.verification                                     │
 │       │                                                                      │
 │       ├── score >= 0.90 → status = "verified" → proceed to payment         │
-│       ├── score 0.60-0.89 → status = "retry_pending" → retry with feedback │
+│       ├── score 0.80-0.89 → status = "verified" → proceed (log issues)     │
+│       ├── score 0.60-0.79 → status = "retry_pending" → retry with feedback │
 │       └── score < 0.60 → status = "rejected" → try different agent         │
 │                                                                              │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -421,7 +492,7 @@ const galileo = createGalileoClient({
 
 ## Retry Feedback Generation
 
-When verification fails (0.60-0.89), Galileo response is used for retry:
+When verification requires retry (score 0.60-0.79), Galileo response is used for retry:
 
 ```typescript
 // Galileo returns

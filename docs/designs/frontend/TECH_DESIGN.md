@@ -109,11 +109,7 @@ interface WorkItemDisplay {
   action_item_id: number;
   action: string;
   status: WorkItemStatus;
-  output?: {
-    title: string;
-    description: string;
-    content: any;
-  };
+  output?: WorkItemOutput;
   verification?: {
     score: number;
     passed: boolean;
@@ -122,6 +118,19 @@ interface WorkItemDisplay {
     amount: number;
     confirmed: boolean;
   };
+}
+
+// Discriminated union for type-safe output content
+type OutputContent =
+  | { type: "text"; data: string }
+  | { type: "image"; data: ImageOutput }
+  | { type: "json"; data: Record<string, unknown> }
+  | { type: "markdown"; data: string };
+
+interface WorkItemOutput {
+  title: string;
+  description: string;
+  content: OutputContent;
 }
 ```
 
@@ -165,19 +174,19 @@ interface WorkItemCardProps {
 
 ### 5. OutputRenderer
 
-Render different output types.
+Render different output types with type-safe discriminated union.
 
 ```typescript
+// Use the shared OutputContent type for type-safe rendering
 interface OutputRendererProps {
-  content: any;
-  type: "text" | "image" | "json" | "markdown";
+  content: OutputContent;
 }
 
-// Rendering:
-// - text: plain text
-// - image: <img> with src (base64 or URL)
-// - json: formatted JSON viewer
-// - markdown: rendered markdown
+// Rendering by content.type:
+// - "text": plain text in <p> tags
+// - "image": <img> with src (base64 or URL), lazy loading
+// - "json": formatted JSON viewer with syntax highlighting
+// - "markdown": rendered markdown via react-markdown
 ```
 
 **Image Display:**
@@ -188,6 +197,43 @@ interface ImageOutput {
   alt: string;
   width?: number;
   height?: number;
+}
+```
+
+**Implementation Pattern:**
+```typescript
+function OutputRenderer({ content }: OutputRendererProps) {
+  switch (content.type) {
+    case "text":
+      return <p className="whitespace-pre-wrap">{content.data}</p>;
+
+    case "image":
+      return (
+        <img
+          src={content.data.url}
+          alt={content.data.alt}
+          width={content.data.width}
+          height={content.data.height}
+          loading="lazy"
+          className="max-w-full h-auto rounded-lg"
+        />
+      );
+
+    case "json":
+      return (
+        <pre className="bg-gray-100 p-4 rounded overflow-auto">
+          <code>{JSON.stringify(content.data, null, 2)}</code>
+        </pre>
+      );
+
+    case "markdown":
+      return <ReactMarkdown>{content.data}</ReactMarkdown>;
+
+    default:
+      // TypeScript exhaustiveness check
+      const _exhaustive: never = content;
+      return null;
+  }
 }
 ```
 
@@ -305,20 +351,115 @@ interface PaymentTrailProps {
 ### useJobStream Hook
 
 ```typescript
-function useJobStream(job_id: string) {
+// Reconnection configuration
+interface ReconnectionConfig {
+  initialDelayMs: number;      // 1000 (1 second)
+  maxDelayMs: number;          // 30000 (30 seconds)
+  backoffMultiplier: number;   // 2
+  maxAttempts: number;         // 10
+  jitterFactor: number;        // 0.1 (10% random jitter)
+}
+
+const DEFAULT_RECONNECTION_CONFIG: ReconnectionConfig = {
+  initialDelayMs: 1000,
+  maxDelayMs: 30000,
+  backoffMultiplier: 2,
+  maxAttempts: 10,
+  jitterFactor: 0.1,
+};
+
+interface ConnectionState {
+  isConnected: boolean;
+  attemptCount: number;
+  lastConnectedAt: Date | null;
+  nextRetryAt: Date | null;
+}
+
+function useJobStream(job_id: string, config: Partial<ReconnectionConfig> = {}) {
+  const reconnectionConfig = { ...DEFAULT_RECONNECTION_CONFIG, ...config };
+
   const [jobState, setJobState] = useState<JobState | null>(null);
   const [workItems, setWorkItems] = useState<Map<string, WorkItemDisplay>>(new Map());
   const [reasoningLog, setReasoningLog] = useState<ReasoningEntry[]>([]);
-  const [isConnected, setIsConnected] = useState(false);
+  const [connectionState, setConnectionState] = useState<ConnectionState>({
+    isConnected: false,
+    attemptCount: 0,
+    lastConnectedAt: null,
+    nextRetryAt: null,
+  });
   const [error, setError] = useState<Error | null>(null);
 
-  useEffect(() => {
-    const eventSource = new EventSource(`/api/jobs/${job_id}/stream`);
+  // Refs to track reconnection state
+  const eventSourceRef = useRef<EventSource | null>(null);
+  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const attemptCountRef = useRef(0);
 
-    eventSource.onopen = () => setIsConnected(true);
-    eventSource.onerror = (e) => {
-      setError(new Error('Connection lost'));
-      setIsConnected(false);
+  // Calculate delay with exponential backoff and jitter
+  const calculateDelay = useCallback((attempt: number): number => {
+    const baseDelay = Math.min(
+      reconnectionConfig.initialDelayMs * Math.pow(reconnectionConfig.backoffMultiplier, attempt),
+      reconnectionConfig.maxDelayMs
+    );
+    // Add jitter to prevent thundering herd
+    const jitter = baseDelay * reconnectionConfig.jitterFactor * (Math.random() - 0.5);
+    return Math.round(baseDelay + jitter);
+  }, [reconnectionConfig]);
+
+  // Connect function
+  const connect = useCallback(() => {
+    // Clean up existing connection
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
+    }
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current);
+      reconnectTimeoutRef.current = null;
+    }
+
+    const eventSource = new EventSource(`/api/jobs/${job_id}/stream`);
+    eventSourceRef.current = eventSource;
+
+    eventSource.onopen = () => {
+      attemptCountRef.current = 0;
+      setConnectionState({
+        isConnected: true,
+        attemptCount: 0,
+        lastConnectedAt: new Date(),
+        nextRetryAt: null,
+      });
+      setError(null);
+    };
+
+    eventSource.onerror = () => {
+      eventSource.close();
+      eventSourceRef.current = null;
+
+      // Check if we should retry
+      if (attemptCountRef.current < reconnectionConfig.maxAttempts) {
+        const delay = calculateDelay(attemptCountRef.current);
+        attemptCountRef.current += 1;
+
+        setConnectionState(prev => ({
+          ...prev,
+          isConnected: false,
+          attemptCount: attemptCountRef.current,
+          nextRetryAt: new Date(Date.now() + delay),
+        }));
+        setError(new Error(`Connection lost. Reconnecting in ${Math.round(delay / 1000)}s...`));
+
+        // Schedule reconnection
+        reconnectTimeoutRef.current = setTimeout(() => {
+          connect();
+        }, delay);
+      } else {
+        // Max attempts reached
+        setConnectionState(prev => ({
+          ...prev,
+          isConnected: false,
+          nextRetryAt: null,
+        }));
+        setError(new Error('Connection failed after maximum retry attempts. Please refresh the page.'));
+      }
     };
 
     // Job events
@@ -386,18 +527,250 @@ function useJobStream(job_id: string) {
       }]);
     });
 
+    // Heartbeat keeps connection alive and resets stale detection
+    eventSource.addEventListener('heartbeat', () => {
+      // Connection is healthy - nothing to do, but confirms we're receiving events
+    });
+  }, [job_id, calculateDelay, reconnectionConfig.maxAttempts]);
+
+  // Initial connection
+  useEffect(() => {
+    connect();
+
+    // Cleanup on unmount
     return () => {
-      eventSource.close();
+      if (eventSourceRef.current) {
+        eventSourceRef.current.close();
+        eventSourceRef.current = null;
+      }
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = null;
+      }
     };
-  }, [job_id]);
+  }, [connect]);
+
+  // Manual reconnect function for UI retry button
+  const reconnect = useCallback(() => {
+    attemptCountRef.current = 0;
+    connect();
+  }, [connect]);
 
   return {
     jobState,
     workItems: Array.from(workItems.values()),
     reasoningLog,
-    isConnected,
-    error
+    connectionState,
+    error,
+    reconnect, // Allow manual reconnection from UI
   };
+}
+```
+
+---
+
+## API Client
+
+The frontend uses a typed API client to communicate with the backend. This client wraps fetch calls and provides type-safe methods aligned with the API module's interface.
+
+### APIClient Interface
+
+```typescript
+// lib/api/client.ts
+
+// Request types (aligned with API module TECH_DESIGN)
+interface CreateJobRequest {
+  prompt: string;
+  budget: number;
+  context?: {
+    product?: string;
+    users?: string;
+    [key: string]: string | undefined;
+  };
+}
+
+// Response types (aligned with API module TECH_DESIGN)
+interface CreateJobResponse {
+  job_id: string;
+  status: "planning";
+  stream_url: string;
+}
+
+interface GetJobResponse {
+  job_id: string;
+  status: "planning" | "plan_verification" | "executing" | "completed" | "failed";
+  prompt: string;
+  budget: {
+    total: number;
+    allocated: number;
+    spent: number;
+    remaining: number;
+  };
+  plan_version: number;
+  context_summary: string;
+  action_items: Array<{
+    id: number;
+    item: string;
+    priority: number;
+    depends_on: number[];
+    status: "pending" | "in_progress" | "completed" | "failed";
+    agent_id: string | null;
+    template_id: string;
+  }>;
+  work_items: Array<{
+    work_id: string;
+    action_item_id: number;
+    status: WorkItemStatus;
+    action: string;
+    output?: WorkItemOutput;
+    verification?: {
+      score: number;
+      passed: boolean;
+    };
+  }>;
+  versions: Array<{
+    version: number;
+    completed_at: string;
+    work_ids: string[];
+  }>;
+  reasoning_log: ReasoningEntry[];
+}
+
+interface ContinueJobResponse {
+  job_id: string;
+  version: number;
+  status: "planning";
+  stream_url: string;
+}
+
+// Error response type
+interface APIError {
+  error: string;
+  code: string;
+  details?: Record<string, unknown>;
+}
+
+// Custom error class for API errors
+class APIClientError extends Error {
+  constructor(
+    message: string,
+    public code: string,
+    public status: number,
+    public details?: Record<string, unknown>
+  ) {
+    super(message);
+    this.name = 'APIClientError';
+  }
+}
+
+// API Client implementation
+class APIClient {
+  private baseUrl: string;
+  private getAuthToken: () => Promise<string>;
+
+  constructor(baseUrl: string, getAuthToken: () => Promise<string>) {
+    this.baseUrl = baseUrl;
+    this.getAuthToken = getAuthToken;
+  }
+
+  private async request<T>(
+    method: string,
+    path: string,
+    body?: unknown
+  ): Promise<T> {
+    const token = await this.getAuthToken();
+
+    const response = await fetch(`${this.baseUrl}${path}`, {
+      method,
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`,
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json() as APIError;
+      throw new APIClientError(
+        errorData.error,
+        errorData.code,
+        response.status,
+        errorData.details
+      );
+    }
+
+    return response.json() as Promise<T>;
+  }
+
+  // Job operations
+  async createJob(input: CreateJobRequest): Promise<CreateJobResponse> {
+    return this.request<CreateJobResponse>('POST', '/api/jobs', input);
+  }
+
+  async getJob(job_id: string): Promise<GetJobResponse> {
+    return this.request<GetJobResponse>('GET', `/api/jobs/${job_id}`);
+  }
+
+  async continueJob(job_id: string, prompt: string): Promise<ContinueJobResponse> {
+    return this.request<ContinueJobResponse>(
+      'POST',
+      `/api/jobs/${job_id}/continue`,
+      { prompt }
+    );
+  }
+
+  // SSE connection (returns EventSource for the hook to manage)
+  streamJob(job_id: string): EventSource {
+    return new EventSource(`${this.baseUrl}/api/jobs/${job_id}/stream`);
+  }
+}
+
+// Export singleton instance
+// The getAuthToken function should be provided by the auth provider (Clerk)
+export const api = new APIClient('', async () => {
+  // Integration with Clerk:
+  // import { useAuth } from '@clerk/nextjs';
+  // const { getToken } = useAuth();
+  // return await getToken() || '';
+
+  // For now, placeholder that will be replaced during implementation
+  if (typeof window !== 'undefined') {
+    // Client-side: use Clerk's getToken
+    const { getToken } = await import('@clerk/nextjs').then(m => m.auth?.());
+    return (await getToken?.()) || '';
+  }
+  return '';
+});
+```
+
+### Usage in Components
+
+```typescript
+// Example: Creating a job
+import { api, APIClientError } from '@/lib/api/client';
+
+async function handleCreateJob(prompt: string, budget: number) {
+  try {
+    const response = await api.createJob({ prompt, budget });
+    // Redirect to job detail page
+    router.push(`/jobs/${response.job_id}`);
+  } catch (error) {
+    if (error instanceof APIClientError) {
+      if (error.code === 'INVALID_INPUT') {
+        // Handle validation error
+        setFormError(error.details?.field as string, error.message);
+      } else if (error.status === 401) {
+        // Handle auth error
+        redirectToLogin();
+      } else {
+        // Handle other errors
+        showToast('error', error.message);
+      }
+    } else {
+      // Handle network or unexpected errors
+      showToast('error', 'An unexpected error occurred');
+    }
+  }
 }
 ```
 
@@ -410,9 +783,18 @@ Main page showing job progress and results.
 ```typescript
 // app/jobs/[job_id]/page.tsx
 
+import { api } from '@/lib/api/client';
+
 export default function JobDetailPage({ params }: { params: { job_id: string } }) {
   const { job_id } = params;
-  const { jobState, workItems, reasoningLog, isConnected, error } = useJobStream(job_id);
+  const {
+    jobState,
+    workItems,
+    reasoningLog,
+    connectionState,
+    error,
+    reconnect
+  } = useJobStream(job_id);
 
   // Initial data fetch
   const { data: initialJob } = useSWR(`/api/jobs/${job_id}`, fetcher);
@@ -425,9 +807,28 @@ export default function JobDetailPage({ params }: { params: { job_id: string } }
         <JobStatusBadge status={jobState?.status || initialJob?.status} />
       </div>
 
-      {/* Connection indicator */}
-      {!isConnected && (
-        <Alert variant="warning">Reconnecting to live updates...</Alert>
+      {/* Connection indicator with reconnection status */}
+      {!connectionState.isConnected && (
+        <Alert variant="warning" className="mb-4">
+          <div className="flex items-center justify-between">
+            <span>
+              {error?.message || 'Connecting to live updates...'}
+              {connectionState.attemptCount > 0 && (
+                <span className="ml-2 text-sm">
+                  (Attempt {connectionState.attemptCount})
+                </span>
+              )}
+            </span>
+            {connectionState.attemptCount >= 10 && (
+              <button
+                onClick={reconnect}
+                className="ml-4 px-3 py-1 bg-yellow-600 text-white rounded hover:bg-yellow-700"
+              >
+                Retry
+              </button>
+            )}
+          </div>
+        </Alert>
       )}
 
       {/* Budget */}
@@ -563,11 +964,349 @@ This module is the end-user interface. It does not provide interfaces to other m
 
 ## Responsive Design
 
-| Breakpoint | Layout |
-|------------|--------|
-| Mobile (<640px) | Single column, stacked |
-| Tablet (640-1024px) | 2 columns |
-| Desktop (>1024px) | 3 columns (work items, outputs, reasoning) |
+### Breakpoints
+
+| Breakpoint | CSS Class | Screen Width |
+|------------|-----------|--------------|
+| Mobile | `sm:` | < 640px |
+| Tablet | `md:` | 640px - 1023px |
+| Desktop | `lg:` | >= 1024px |
+
+### Component-Level Responsive Behavior
+
+#### JobDetailPage Layout
+
+```typescript
+// Responsive grid classes
+<div className="
+  grid
+  grid-cols-1          // Mobile: single column
+  md:grid-cols-2       // Tablet: 2 columns
+  lg:grid-cols-3       // Desktop: 3 columns
+  gap-4 md:gap-6
+">
+  {/* Work items: full width on mobile, 2 cols on tablet, 2 cols on desktop */}
+  <div className="col-span-1 md:col-span-2 lg:col-span-2">
+    <WorkItemList workItems={workItems} />
+  </div>
+
+  {/* Reasoning log: full width on mobile, 2 cols on tablet, 1 col on desktop */}
+  <div className="col-span-1 md:col-span-2 lg:col-span-1">
+    <ReasoningLog entries={reasoningLog} />
+  </div>
+</div>
+```
+
+#### ReasoningLog Component
+
+| Breakpoint | Behavior |
+|------------|----------|
+| Mobile | Collapsed by default, expandable accordion. Shows only latest 3 entries. "Show more" button to expand. |
+| Tablet | Collapsed by default, expandable accordion. Shows latest 5 entries. |
+| Desktop | Always visible sidebar. Shows latest 10 entries with scrollable overflow. |
+
+```typescript
+interface ReasoningLogProps {
+  entries: ReasoningEntry[];
+  maxEntries?: number;  // Responsive default based on breakpoint
+}
+
+function ReasoningLog({ entries, maxEntries }: ReasoningLogProps) {
+  const [isExpanded, setIsExpanded] = useState(false);
+
+  // Responsive max entries
+  const responsiveMaxEntries = useBreakpointValue({
+    base: 3,   // Mobile
+    md: 5,     // Tablet
+    lg: 10,    // Desktop
+  });
+
+  const displayEntries = isExpanded
+    ? entries
+    : entries.slice(-(maxEntries || responsiveMaxEntries));
+
+  return (
+    <div className="
+      border rounded-lg p-4
+      max-h-[300px] md:max-h-[400px] lg:max-h-[600px]
+      overflow-y-auto
+    ">
+      {/* Mobile/Tablet: collapsible header */}
+      <button
+        className="lg:hidden w-full flex justify-between items-center"
+        onClick={() => setIsExpanded(!isExpanded)}
+        aria-expanded={isExpanded}
+      >
+        <h3 className="font-semibold">Reasoning Log</h3>
+        <ChevronIcon direction={isExpanded ? 'up' : 'down'} />
+      </button>
+
+      {/* Desktop: always visible header */}
+      <h3 className="hidden lg:block font-semibold mb-4">Reasoning Log</h3>
+
+      {/* Entries */}
+      <div className={`
+        ${!isExpanded ? 'hidden lg:block' : 'block'}
+        space-y-2
+      `}>
+        {displayEntries.map((entry, index) => (
+          <ReasoningEntry key={index} entry={entry} />
+        ))}
+      </div>
+    </div>
+  );
+}
+```
+
+#### WorkItemList Component
+
+| Breakpoint | Behavior |
+|------------|----------|
+| Mobile | Full-width cards, vertically stacked. Tap to expand details. |
+| Tablet | 2-column card grid. Click to expand inline. |
+| Desktop | List view with expandable rows. Side panel for selected item details. |
+
+```typescript
+function WorkItemList({ workItems, onItemClick }: WorkItemListProps) {
+  return (
+    <div className="
+      flex flex-col gap-3
+      md:grid md:grid-cols-2 md:gap-4
+      lg:flex lg:flex-col lg:gap-2
+    ">
+      {workItems.map(item => (
+        <WorkItemCard
+          key={item.work_id}
+          workItem={item}
+          onClick={() => onItemClick?.(item.work_id)}
+        />
+      ))}
+    </div>
+  );
+}
+```
+
+#### WorkItemCard Component
+
+| Breakpoint | Behavior |
+|------------|----------|
+| Mobile | Compact card with status icon. Tap expands to show output preview. Full output in modal. |
+| Tablet | Medium card with status, action text, score. Click expands inline. |
+| Desktop | Row with all info visible. Expand arrow shows full output below. |
+
+```typescript
+function WorkItemCard({ workItem, expanded, onClick }: WorkItemCardProps) {
+  return (
+    <div
+      className="
+        border rounded-lg p-3 md:p-4
+        cursor-pointer hover:bg-gray-50
+        transition-colors
+      "
+      onClick={onClick}
+    >
+      {/* Header - always visible */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <StatusIcon status={workItem.status} />
+          <span className="
+            font-medium
+            text-sm md:text-base
+            truncate max-w-[200px] md:max-w-none
+          ">
+            {workItem.action}
+          </span>
+        </div>
+        {workItem.payment && (
+          <span className="text-green-600 text-sm">
+            ${workItem.payment.amount.toFixed(2)}
+          </span>
+        )}
+      </div>
+
+      {/* Mobile: tap to expand */}
+      {expanded && (
+        <div className="mt-3 pt-3 border-t">
+          {workItem.output && (
+            <OutputRenderer content={workItem.output.content} />
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+```
+
+#### BudgetDisplay Component
+
+| Breakpoint | Behavior |
+|------------|----------|
+| Mobile | Horizontal progress bar with total/spent numbers below. |
+| Tablet | Same as mobile, slightly larger. |
+| Desktop | Horizontal bar with inline labels (Spent | Allocated | Remaining). |
+
+```typescript
+function BudgetDisplay({ budget }: BudgetDisplayProps) {
+  const spentPercent = (budget.spent / budget.total) * 100;
+  const allocatedPercent = (budget.allocated / budget.total) * 100;
+
+  return (
+    <div className="p-4 bg-gray-50 rounded-lg">
+      {/* Progress bar */}
+      <div className="h-3 bg-gray-200 rounded-full overflow-hidden">
+        <div
+          className="h-full bg-green-500"
+          style={{ width: `${spentPercent}%` }}
+        />
+        <div
+          className="h-full bg-yellow-400 -mt-3"
+          style={{ width: `${allocatedPercent - spentPercent}%`, marginLeft: `${spentPercent}%` }}
+        />
+      </div>
+
+      {/* Labels - stacked on mobile, inline on desktop */}
+      <div className="
+        mt-2
+        flex flex-col gap-1
+        lg:flex-row lg:justify-between lg:gap-4
+        text-sm
+      ">
+        <span>Spent: ${budget.spent.toFixed(2)}</span>
+        <span className="hidden lg:inline">|</span>
+        <span>Allocated: ${budget.allocated.toFixed(2)}</span>
+        <span className="hidden lg:inline">|</span>
+        <span>Remaining: ${budget.remaining.toFixed(2)}</span>
+      </div>
+    </div>
+  );
+}
+```
+
+#### ContinuationInput Component
+
+| Breakpoint | Behavior |
+|------------|----------|
+| Mobile | Full-width textarea, button below. Fixed to bottom of screen when keyboard open. |
+| Tablet | Full-width textarea, button inline to the right. |
+| Desktop | Same as tablet. |
+
+```typescript
+function ContinuationInput({ job_id, onSubmit, disabled }: ContinuationInputProps) {
+  const [prompt, setPrompt] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  return (
+    <div className="
+      bg-white border rounded-lg p-4
+      fixed bottom-0 left-0 right-0 md:relative
+      shadow-lg md:shadow-none
+    ">
+      <p className="text-sm text-gray-600 mb-2">Want to refine the output?</p>
+      <div className="flex flex-col md:flex-row gap-2">
+        <textarea
+          value={prompt}
+          onChange={(e) => setPrompt(e.target.value)}
+          placeholder="Describe what you'd like to change..."
+          disabled={disabled || isSubmitting}
+          className="
+            flex-1
+            border rounded p-2
+            min-h-[80px] md:min-h-[60px]
+            resize-none
+          "
+        />
+        <button
+          onClick={async () => {
+            setIsSubmitting(true);
+            await onSubmit(prompt);
+            setIsSubmitting(false);
+          }}
+          disabled={disabled || isSubmitting || !prompt.trim()}
+          className="
+            px-4 py-2
+            bg-blue-600 text-white rounded
+            hover:bg-blue-700
+            disabled:bg-gray-400
+            w-full md:w-auto
+          "
+        >
+          {isSubmitting ? 'Continuing...' : 'Continue'}
+        </button>
+      </div>
+    </div>
+  );
+}
+```
+
+#### PaymentTrail Component
+
+| Breakpoint | Behavior |
+|------------|----------|
+| Mobile | Vertical list with action name and amount. Tap to see tx hash (links to explorer). |
+| Tablet | Table with all columns visible. |
+| Desktop | Same as tablet with more spacing. |
+
+```typescript
+function PaymentTrail({ payments }: PaymentTrailProps) {
+  return (
+    <>
+      {/* Mobile: Card list */}
+      <div className="md:hidden space-y-2">
+        {payments.map(payment => (
+          <div key={payment.work_id} className="border rounded p-3">
+            <div className="flex justify-between">
+              <span className="font-medium">{payment.action}</span>
+              <span className="text-green-600">${payment.amount.toFixed(2)}</span>
+            </div>
+            <div className="text-sm text-gray-500 mt-1">
+              {payment.agent_name}
+            </div>
+            <a
+              href={`https://basescan.org/tx/${payment.tx_hash}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-sm text-blue-600 hover:underline"
+            >
+              View transaction
+            </a>
+          </div>
+        ))}
+      </div>
+
+      {/* Tablet/Desktop: Table */}
+      <table className="hidden md:table w-full">
+        <thead>
+          <tr className="border-b">
+            <th className="text-left p-2">Action</th>
+            <th className="text-left p-2">Agent</th>
+            <th className="text-right p-2">Amount</th>
+            <th className="text-left p-2">Transaction</th>
+          </tr>
+        </thead>
+        <tbody>
+          {payments.map(payment => (
+            <tr key={payment.work_id} className="border-b">
+              <td className="p-2">{payment.action}</td>
+              <td className="p-2">{payment.agent_name}</td>
+              <td className="p-2 text-right">${payment.amount.toFixed(2)}</td>
+              <td className="p-2">
+                <a
+                  href={`https://basescan.org/tx/${payment.tx_hash}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-blue-600 hover:underline text-sm"
+                >
+                  {payment.tx_hash.slice(0, 10)}...
+                </a>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </>
+  );
+}
+```
 
 ---
 

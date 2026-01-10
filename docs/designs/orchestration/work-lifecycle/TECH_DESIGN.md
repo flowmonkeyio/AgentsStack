@@ -21,6 +21,63 @@
 
 ---
 
+## Dependencies
+
+This module depends on:
+- `DatabaseClient` from `@/lib/db/database-client` for all database operations
+- Types from `@/types` (WorkItem, WorkItemStatus, ActionItem, Plan, Agent, CriteriaResult)
+
+---
+
+## Required DatabaseClient Extensions
+
+The following methods must be added to `DatabaseClient` to support this module:
+
+```typescript
+/**
+ * Additional methods required in DatabaseClient for WorkLifecycle module.
+ * These should be added to lib/db/database-client.ts
+ */
+interface DatabaseClientExtensions {
+  /**
+   * Update specific fields of a work item (partial update).
+   * This is used by state transitions to update status and related fields.
+   *
+   * @param work_id - The work item ID
+   * @param updates - Partial work item updates
+   */
+  updateWorkItemFields(work_id: string, updates: Partial<WorkItem>): Promise<void>;
+
+  /**
+   * Get work items for specific action item IDs within a job.
+   * Used for dependency checking.
+   *
+   * @param job_id - The job ID
+   * @param action_item_ids - Array of action item IDs
+   */
+  getWorkItemsByActionItemIds(job_id: string, action_item_ids: number[]): Promise<WorkItem[]>;
+
+  /**
+   * Add new action items to a plan.
+   * Used for dynamic TODO spawning.
+   *
+   * @param plan_id - The plan ID
+   * @param newItems - Array of new action items to add
+   */
+  pushActionItemsToPlan(plan_id: string, newItems: ActionItem[]): Promise<void>;
+}
+```
+
+**Implementation Notes:**
+
+1. `updateWorkItemFields` - Should use MongoDB's `$set` operator for partial updates
+2. `getWorkItemsByActionItemIds` - Should use `$in` operator for efficient batch query
+3. `pushActionItemsToPlan` - Should use `$push` with `$each` for array extension
+
+These methods follow the existing DatabaseClient patterns and should be implemented in `lib/db/database-client-impl.ts`.
+
+---
+
 ## Work Item States
 
 ```typescript
@@ -177,48 +234,252 @@ type WorkItemStatus =
 
 ---
 
-## Transition Implementation
+## Transition Payload Types
+
+All transition payloads are strongly typed. Each trigger has a specific payload interface:
 
 ```typescript
+import type {
+  WorkItem,
+  WorkItemStatus,
+  ActionItem,
+  Agent,
+  CriteriaResult
+} from "@/types";
+import type { DatabaseClient } from "@/lib/db/database-client";
+
+// =============================================================================
+// TRANSITION TRIGGER TYPES
+// =============================================================================
+
+/**
+ * Union type of all valid transition triggers
+ */
+type TransitionTrigger =
+  | "dependencies_met"
+  | "picked_up"
+  | "prompt_generated"
+  | "async_response"
+  | "sync_response"
+  | "poll_completed"
+  | "poll_timeout"
+  | "retry_dispatch"
+  | "max_stale_retries"
+  | "start_verification"
+  | "verification_pass"
+  | "verification_retry"
+  | "verification_reject"
+  | "retry_initiated"
+  | "try_new_agent"
+  | "no_alternatives"
+  | "agent_reassigned"
+  | "start_payment"
+  | "payment_confirmed"
+  | "payment_failed"
+  | "retry_payment"
+  | "max_payment_retries";
+
+// =============================================================================
+// PAYLOAD INTERFACES FOR EACH TRIGGER
+// =============================================================================
+
+/**
+ * Payload for "prompt_generated" trigger
+ */
+interface PromptGeneratedPayload {
+  generated_prompt: string;
+  requirements: string[];
+  context_used: {
+    summary: string;
+    refs_fetched: string[];
+  };
+}
+
+/**
+ * Payload for "async_response" trigger (agent returned async reference)
+ */
+interface AsyncResponsePayload {
+  reference_id: string;
+  status_url: string;
+  callback_url?: string;
+}
+
+/**
+ * Payload for "sync_response" trigger (agent returned immediate result)
+ */
+interface SyncResponsePayload {
+  output: {
+    title: string;
+    description: string;
+    content: unknown;
+  };
+}
+
+/**
+ * Payload for "poll_completed" trigger
+ */
+interface PollCompletedPayload {
+  output: {
+    title: string;
+    description: string;
+    content: unknown;
+  };
+}
+
+/**
+ * Payload for verification triggers (pass, retry, reject)
+ */
+interface VerificationPayload {
+  score: number;
+  reasoning: string;
+  criteria_results: CriteriaResult[];
+  issues: string[];
+}
+
+/**
+ * Extended payload for verification_retry (includes retry context)
+ */
+interface VerificationRetryPayload extends VerificationPayload {
+  previous_output: unknown;
+  suggestions: string[];
+}
+
+/**
+ * Payload for "try_new_agent" trigger
+ */
+interface TryNewAgentPayload {
+  alternative_agents: Agent[];
+}
+
+/**
+ * Payload for "agent_reassigned" trigger
+ */
+interface AgentReassignedPayload {
+  new_agent: {
+    agent_id: string;
+    name: string;
+    url: string;
+    price: number;
+  };
+}
+
+/**
+ * Payload for "payment_confirmed" trigger
+ */
+interface PaymentConfirmedPayload {
+  amount: number;
+  tx_hash: string;
+}
+
+// =============================================================================
+// TRANSITION PAYLOAD TYPE MAP
+// =============================================================================
+
+/**
+ * Maps each trigger to its payload type.
+ * Triggers with undefined payload require no additional data.
+ */
+interface TransitionPayloadMap {
+  dependencies_met: undefined;
+  picked_up: undefined;
+  prompt_generated: PromptGeneratedPayload;
+  async_response: AsyncResponsePayload;
+  sync_response: SyncResponsePayload;
+  poll_completed: PollCompletedPayload;
+  poll_timeout: undefined;
+  retry_dispatch: undefined;
+  max_stale_retries: undefined;
+  start_verification: undefined;
+  verification_pass: VerificationPayload;
+  verification_retry: VerificationRetryPayload;
+  verification_reject: VerificationPayload;
+  retry_initiated: undefined;
+  try_new_agent: TryNewAgentPayload;
+  no_alternatives: undefined;
+  agent_reassigned: AgentReassignedPayload;
+  start_payment: undefined;
+  payment_confirmed: PaymentConfirmedPayload;
+  payment_failed: undefined;
+  retry_payment: undefined;
+  max_payment_retries: undefined;
+}
+
+/**
+ * Helper type to get payload type for a trigger
+ */
+type PayloadFor<T extends TransitionTrigger> = TransitionPayloadMap[T];
+```
+
+---
+
+## Transition Result and Implementation
+
+```typescript
+// =============================================================================
+// TRANSITION RESULT
+// =============================================================================
+
 interface TransitionResult {
   success: boolean;
   new_status?: WorkItemStatus;
   error?: string;
-  event?: OrchestrationEvent;
+  event?: WorkLifecycleEvent;
 }
 
-class WorkLifecycle {
-  async transition(
-    work_id: string,
-    trigger: string,
-    payload?: any
-  ): Promise<TransitionResult> {
+// =============================================================================
+// WORK LIFECYCLE CLASS
+// =============================================================================
 
-    const work = await db.work_items.findOne({ work_id });
+/**
+ * WorkLifecycle manages state transitions for work items.
+ * Uses DatabaseClient for all database operations (never direct MongoDB access).
+ */
+class WorkLifecycle {
+  constructor(private readonly db: DatabaseClient) {}
+
+  /**
+   * Execute a state transition for a work item.
+   *
+   * @param work_id - The work item ID
+   * @param trigger - The transition trigger (must be valid TransitionTrigger)
+   * @param payload - Optional payload data (type depends on trigger)
+   */
+  async transition<T extends TransitionTrigger>(
+    work_id: string,
+    trigger: T,
+    payload?: PayloadFor<T>
+  ): Promise<TransitionResult> {
+    // Use DatabaseClient to fetch work item
+    const work = await this.db.getWorkItem(work_id);
     if (!work) {
       return { success: false, error: "Work item not found" };
     }
 
     const transition = this.getTransition(work.status, trigger);
     if (!transition) {
-      return { success: false, error: `Invalid transition: ${work.status} + ${trigger}` };
+      return {
+        success: false,
+        error: `Invalid transition: ${work.status} + ${trigger}`
+      };
     }
 
-    // Check guard
+    // Check guard (guard functions are typed per transition)
     if (transition.guard && !transition.guard(work, payload)) {
       return { success: false, error: `Guard failed: ${transition.guardName}` };
     }
 
-    // Execute transition
+    // Execute transition to get field updates
     const updates = transition.execute(work, payload);
 
-    await db.work_items.updateOne(
-      { work_id },
-      { $set: { status: transition.to, ...updates } }
-    );
+    // Use DatabaseClient method to update work item
+    // The updateWorkItemFields method performs a partial update
+    await this.db.updateWorkItemFields(work_id, {
+      status: transition.to,
+      ...updates
+    });
 
-    // Create event
-    const event: OrchestrationEvent = {
+    // Create event for emission
+    const event: WorkLifecycleEvent = {
       type: "work:status_changed",
       work_id,
       status: transition.to
@@ -231,8 +492,13 @@ class WorkLifecycle {
     };
   }
 
-  private getTransition(from: WorkItemStatus, trigger: string): Transition | null {
-    return TRANSITIONS.find(t => t.from === from && t.trigger === trigger) || null;
+  private getTransition(
+    from: WorkItemStatus,
+    trigger: TransitionTrigger
+  ): Transition | null {
+    return TRANSITIONS.find(
+      t => t.from === from && t.trigger === trigger
+    ) || null;
   }
 }
 ```
@@ -241,18 +507,34 @@ class WorkLifecycle {
 
 ## Transition Definitions
 
+Each transition is strongly typed. Guards and execute functions receive typed payloads based on the trigger.
+
 ```typescript
-interface Transition {
+// =============================================================================
+// TRANSITION INTERFACE (TYPED)
+// =============================================================================
+
+/**
+ * Generic transition definition with typed payload.
+ * The guard and execute functions receive the correct payload type for their trigger.
+ */
+interface Transition<T extends TransitionTrigger = TransitionTrigger> {
   from: WorkItemStatus;
   to: WorkItemStatus;
-  trigger: string;
-  guard?: (work: WorkItem, payload?: any) => boolean;
+  trigger: T;
+  guard?: (work: WorkItem, payload: PayloadFor<T>) => boolean;
   guardName?: string;
-  execute: (work: WorkItem, payload?: any) => Partial<WorkItem>;
+  execute: (work: WorkItem, payload: PayloadFor<T>) => Partial<WorkItem>;
 }
 
+// =============================================================================
+// TRANSITION DEFINITIONS
+// =============================================================================
+
 const TRANSITIONS: Transition[] = [
+  // -------------------------------------------------------------------------
   // pending → ready
+  // -------------------------------------------------------------------------
   {
     from: "pending",
     to: "ready",
@@ -260,99 +542,166 @@ const TRANSITIONS: Transition[] = [
     execute: () => ({})
   },
 
+  // -------------------------------------------------------------------------
   // ready → prompting
+  // -------------------------------------------------------------------------
   {
     from: "ready",
     to: "prompting",
     trigger: "picked_up",
-    execute: () => ({ picked_up_at: new Date() })
+    execute: () => ({ started_at: new Date() })
   },
 
+  // -------------------------------------------------------------------------
   // prompting → dispatched
+  // -------------------------------------------------------------------------
   {
     from: "prompting",
     to: "dispatched",
     trigger: "prompt_generated",
-    guard: (_, payload) => payload?.generated_prompt?.length > 0,
+    guard: (_work: WorkItem, payload: PromptGeneratedPayload) =>
+      payload.generated_prompt.length > 0,
     guardName: "has_prompt",
-    execute: (_, payload) => ({
-      generated_prompt: payload.generated_prompt,
-      requirements: payload.requirements,
-      dispatched_at: new Date()
-    })
-  },
-
-  // dispatched → polling (async)
-  {
-    from: "dispatched",
-    to: "polling",
-    trigger: "async_response",
-    execute: (_, payload) => ({
-      external_ref: {
-        reference_id: payload.reference_id,
-        status_url: payload.status_url,
-        polling: {
-          started_at: new Date(),
-          interval_ms: 3000,
-          timeout_at: new Date(Date.now() + 600000)  // 10 min
-        }
+    execute: (_work: WorkItem, payload: PromptGeneratedPayload) => ({
+      prompt: {
+        template_id: "", // Set by caller
+        generated_prompt: payload.generated_prompt,
+        context_used: payload.context_used,
+        generated_at: new Date()
       }
     })
   },
 
-  // dispatched → received (sync)
+  // -------------------------------------------------------------------------
+  // dispatched → polling (async response)
+  // -------------------------------------------------------------------------
+  {
+    from: "dispatched",
+    to: "polling",
+    trigger: "async_response",
+    execute: (_work: WorkItem, payload: AsyncResponsePayload) => ({
+      external_ref: {
+        reference_id: payload.reference_id,
+        status_url: payload.status_url,
+        callback_url: payload.callback_url ?? "",
+        dispatched_at: new Date(),
+        last_poll_at: null,
+        next_poll_at: new Date(Date.now() + 3000), // First poll in 3s
+        polling: {
+          initial_interval_ms: 3000,
+          current_interval_ms: 3000,
+          max_interval_ms: 15000,
+          backoff_multiplier: 1.5,
+          poll_count: 0,
+          timeout_at: new Date(Date.now() + 600000), // 10 min
+          timeout_ms: 600000
+        },
+        last_response: null,
+        last_error: null
+      }
+    })
+  },
+
+  // -------------------------------------------------------------------------
+  // dispatched → received (sync response)
+  // -------------------------------------------------------------------------
   {
     from: "dispatched",
     to: "received",
     trigger: "sync_response",
-    execute: (_, payload) => ({
-      output: payload.output,
-      received_at: new Date()
+    execute: (_work: WorkItem, payload: SyncResponsePayload) => ({
+      output: payload.output
     })
   },
 
+  // -------------------------------------------------------------------------
   // polling → received
+  // -------------------------------------------------------------------------
   {
     from: "polling",
     to: "received",
     trigger: "poll_completed",
-    execute: (_, payload) => ({
-      output: payload.output,
-      received_at: new Date()
+    execute: (_work: WorkItem, payload: PollCompletedPayload) => ({
+      output: payload.output
     })
   },
 
+  // -------------------------------------------------------------------------
   // polling → stale
+  // -------------------------------------------------------------------------
   {
     from: "polling",
     to: "stale",
     trigger: "poll_timeout",
-    execute: (work) => ({
-      stale_retry_count: (work.stale_retry_count || 0) + 1
-    })
+    execute: (work: WorkItem) => {
+      const currentPolling = work.external_ref?.polling;
+      return {
+        external_ref: work.external_ref ? {
+          ...work.external_ref,
+          last_error: "Polling timeout exceeded"
+        } : null
+      };
+    }
   },
 
+  // -------------------------------------------------------------------------
   // stale → dispatched (retry)
+  // Stale retry count is tracked via retries array length with reason "stale"
+  // -------------------------------------------------------------------------
   {
     from: "stale",
     to: "dispatched",
     trigger: "retry_dispatch",
-    guard: (work) => (work.stale_retry_count || 0) < 3,
+    guard: (work: WorkItem) => {
+      const staleRetries = work.retries.filter(r => r.reason === "stale").length;
+      return staleRetries < 3;
+    },
     guardName: "stale_retries_remaining",
-    execute: () => ({ dispatched_at: new Date() })
+    execute: (work: WorkItem) => ({
+      external_ref: work.external_ref ? {
+        ...work.external_ref,
+        dispatched_at: new Date(),
+        last_error: null,
+        polling: {
+          ...work.external_ref.polling,
+          poll_count: 0,
+          timeout_at: new Date(Date.now() + 600000)
+        }
+      } : null,
+      retries: [
+        ...work.retries,
+        {
+          attempt: work.attempt,
+          reason: "stale",
+          score: 0,
+          feedback_sent: "Retrying due to polling timeout",
+          agent_id: work.agent?.agent_id ?? "",
+          timestamp: new Date()
+        }
+      ]
+    })
   },
 
-  // stale → failed
+  // -------------------------------------------------------------------------
+  // stale → failed (max retries)
+  // -------------------------------------------------------------------------
   {
     from: "stale",
     to: "failed",
     trigger: "max_stale_retries",
-    guard: (work) => (work.stale_retry_count || 0) >= 3,
+    guard: (work: WorkItem) => {
+      const staleRetries = work.retries.filter(r => r.reason === "stale").length;
+      return staleRetries >= 3;
+    },
     guardName: "stale_retries_exhausted",
-    execute: () => ({ failed_reason: "Max stale retries exceeded" })
+    execute: () => ({
+      completed_at: new Date()
+    })
   },
 
+  // -------------------------------------------------------------------------
   // received → verifying
+  // -------------------------------------------------------------------------
   {
     from: "received",
     to: "verifying",
@@ -360,160 +709,251 @@ const TRANSITIONS: Transition[] = [
     execute: () => ({})
   },
 
+  // -------------------------------------------------------------------------
   // verifying → verified (pass)
+  // -------------------------------------------------------------------------
   {
     from: "verifying",
     to: "verified",
     trigger: "verification_pass",
-    guard: (_, payload) => payload.score >= 0.90,
+    guard: (_work: WorkItem, payload: VerificationPayload) =>
+      payload.score >= 0.90,
     guardName: "score_passes",
-    execute: (_, payload) => ({
+    execute: (_work: WorkItem, payload: VerificationPayload) => ({
       verification: {
         score: payload.score,
-        passed: true,
-        criteria_results: payload.criteria_results
+        reasoning: payload.reasoning,
+        criteria_results: payload.criteria_results,
+        issues: payload.issues,
+        verified_at: new Date()
       }
     })
   },
 
+  // -------------------------------------------------------------------------
   // verifying → retry_pending
+  // -------------------------------------------------------------------------
   {
     from: "verifying",
     to: "retry_pending",
     trigger: "verification_retry",
-    guard: (work, payload) =>
+    guard: (work: WorkItem, payload: VerificationRetryPayload) =>
       payload.score >= 0.60 &&
       payload.score < 0.90 &&
-      work.attempt < 3,
+      work.attempt < work.max_attempts,
     guardName: "retriable_score_and_attempts",
-    execute: (_, payload) => ({
+    execute: (work: WorkItem, payload: VerificationRetryPayload) => ({
       verification: {
         score: payload.score,
-        passed: false,
-        criteria_results: payload.criteria_results
+        reasoning: payload.reasoning,
+        criteria_results: payload.criteria_results,
+        issues: payload.issues,
+        verified_at: new Date()
       },
       retry_context: {
+        previous_attempt: work.attempt,
         previous_output: payload.previous_output,
         verification_feedback: {
           score: payload.score,
-          issues: payload.issues,
+          reasoning: payload.reasoning,
+          issues: payload.criteria_results
+            .filter(cr => !cr.passed)
+            .map(cr => ({
+              criterion: cr.criterion,
+              passed: cr.passed,
+              detail: payload.issues.find(i => i.includes(cr.criterion)) ?? ""
+            })),
           suggestions: payload.suggestions
         }
       }
     })
   },
 
+  // -------------------------------------------------------------------------
   // verifying → rejected
+  // -------------------------------------------------------------------------
   {
     from: "verifying",
     to: "rejected",
     trigger: "verification_reject",
-    guard: (work, payload) => payload.score < 0.60 || work.attempt >= 3,
+    guard: (work: WorkItem, payload: VerificationPayload) =>
+      payload.score < 0.60 || work.attempt >= work.max_attempts,
     guardName: "low_score_or_max_attempts",
-    execute: (_, payload) => ({
+    execute: (work: WorkItem, payload: VerificationPayload) => ({
       verification: {
         score: payload.score,
-        passed: false,
-        criteria_results: payload.criteria_results
-      },
-      rejected_reason: payload.score < 0.60
-        ? "Score below threshold"
-        : "Max attempts exceeded"
+        reasoning: payload.reasoning,
+        criteria_results: payload.criteria_results,
+        issues: payload.issues,
+        verified_at: new Date()
+      }
     })
   },
 
+  // -------------------------------------------------------------------------
   // retry_pending → prompting
+  // -------------------------------------------------------------------------
   {
     from: "retry_pending",
     to: "prompting",
     trigger: "retry_initiated",
-    execute: (work) => ({
-      attempt: work.attempt + 1
+    execute: (work: WorkItem) => ({
+      attempt: work.attempt + 1,
+      retries: [
+        ...work.retries,
+        {
+          attempt: work.attempt,
+          reason: "verification",
+          score: work.verification?.score ?? 0,
+          feedback_sent: work.retry_context?.verification_feedback.suggestions.join("; ") ?? "",
+          agent_id: work.agent?.agent_id ?? "",
+          timestamp: new Date()
+        }
+      ]
     })
   },
 
+  // -------------------------------------------------------------------------
   // rejected → reassigning
+  // -------------------------------------------------------------------------
   {
     from: "rejected",
     to: "reassigning",
     trigger: "try_new_agent",
-    guard: (_, payload) => payload.alternative_agents?.length > 0,
+    guard: (_work: WorkItem, payload: TryNewAgentPayload) =>
+      payload.alternative_agents.length > 0,
     guardName: "alternatives_available",
     execute: () => ({})
   },
 
+  // -------------------------------------------------------------------------
   // rejected → failed (no alternatives)
+  // -------------------------------------------------------------------------
   {
     from: "rejected",
     to: "failed",
     trigger: "no_alternatives",
-    execute: () => ({ failed_reason: "No alternative agents available" })
+    execute: () => ({
+      completed_at: new Date()
+    })
   },
 
+  // -------------------------------------------------------------------------
   // reassigning → prompting
+  // -------------------------------------------------------------------------
   {
     from: "reassigning",
     to: "prompting",
     trigger: "agent_reassigned",
-    execute: (_, payload) => ({
+    execute: (work: WorkItem, payload: AgentReassignedPayload) => ({
       agent: payload.new_agent,
-      attempt: 1  // Reset attempts for new agent
+      attempt: 1, // Reset attempts for new agent
+      retries: [
+        ...work.retries,
+        {
+          attempt: work.attempt,
+          reason: "reassignment",
+          score: work.verification?.score ?? 0,
+          feedback_sent: `Reassigned from ${work.agent?.agent_id ?? "unknown"} to ${payload.new_agent.agent_id}`,
+          agent_id: work.agent?.agent_id ?? "",
+          timestamp: new Date()
+        }
+      ]
     })
   },
 
+  // -------------------------------------------------------------------------
   // verified → paying
+  // -------------------------------------------------------------------------
   {
     from: "verified",
     to: "paying",
     trigger: "start_payment",
-    execute: () => ({ payment: { status: "pending" } })
+    execute: (work: WorkItem) => ({
+      payment: {
+        status: "processing" as const,
+        amount: work.agent?.price ?? 0,
+        tx_hash: null,
+        original_price: work.agent?.price ?? 0,
+        negotiated_price: work.agent?.price ?? 0,
+        error: null,
+        retry_count: 0,
+        initiated_at: new Date(),
+        confirmed_at: null
+      }
+    })
   },
 
+  // -------------------------------------------------------------------------
   // paying → completed
+  // -------------------------------------------------------------------------
   {
     from: "paying",
     to: "completed",
     trigger: "payment_confirmed",
-    execute: (_, payload) => ({
-      payment: {
-        status: "confirmed",
+    execute: (work: WorkItem, payload: PaymentConfirmedPayload) => ({
+      payment: work.payment ? {
+        ...work.payment,
+        status: "confirmed" as const,
         amount: payload.amount,
         tx_hash: payload.tx_hash,
         confirmed_at: new Date()
-      }
+      } : null,
+      completed_at: new Date()
     })
   },
 
+  // -------------------------------------------------------------------------
   // paying → payment_retry
+  // -------------------------------------------------------------------------
   {
     from: "paying",
     to: "payment_retry",
     trigger: "payment_failed",
-    guard: (work) => (work.payment?.retry_count || 0) < 3,
+    guard: (work: WorkItem) =>
+      (work.payment?.retry_count ?? 0) < 3,
     guardName: "payment_retries_remaining",
-    execute: (work) => ({
-      payment: {
+    execute: (work: WorkItem) => ({
+      payment: work.payment ? {
         ...work.payment,
-        status: "retry",
-        retry_count: (work.payment?.retry_count || 0) + 1
-      }
+        status: "failed" as const,
+        retry_count: (work.payment.retry_count ?? 0) + 1,
+        error: "Payment failed, will retry"
+      } : null
     })
   },
 
+  // -------------------------------------------------------------------------
   // payment_retry → paying
+  // -------------------------------------------------------------------------
   {
     from: "payment_retry",
     to: "paying",
     trigger: "retry_payment",
-    execute: () => ({ payment: { status: "pending" } })
+    execute: (work: WorkItem) => ({
+      payment: work.payment ? {
+        ...work.payment,
+        status: "processing" as const,
+        error: null
+      } : null
+    })
   },
 
+  // -------------------------------------------------------------------------
   // payment_retry → failed
+  // -------------------------------------------------------------------------
   {
     from: "payment_retry",
     to: "failed",
     trigger: "max_payment_retries",
-    execute: () => ({ failed_reason: "Max payment retries exceeded" })
+    execute: (work: WorkItem) => ({
+      payment: work.payment ? {
+        ...work.payment,
+        status: "failed" as const,
+        error: "Max payment retries exceeded"
+      } : null,
+      completed_at: new Date()
+    })
   }
 ];
 ```
@@ -630,6 +1070,10 @@ Iter 4:                                       └──────────�
 ### Resolution Logic
 
 ```typescript
+/**
+ * Get action items that have all dependencies satisfied.
+ * Uses Plan's action_items and a set of completed action item IDs.
+ */
 function getActionableTodos(
   plan: Plan,
   completedIds: Set<number>
@@ -643,9 +1087,34 @@ function getActionableTodos(
   });
 }
 
-function checkDependencies(work_id: string): Promise<void> {
-  const work = await db.work_items.findOne({ work_id });
-  const actionItem = await getActionItemForWork(work);
+/**
+ * Check if a work item's dependencies are satisfied.
+ * Uses DatabaseClient for all database operations.
+ *
+ * @param db - DatabaseClient instance
+ * @param lifecycle - WorkLifecycle instance for transitions
+ * @param work_id - The work item to check
+ * @param plan - The plan containing action items
+ */
+async function checkDependencies(
+  db: DatabaseClient,
+  lifecycle: WorkLifecycle,
+  work_id: string,
+  plan: Plan
+): Promise<void> {
+  // Use DatabaseClient to get work item
+  const work = await db.getWorkItem(work_id);
+  if (!work) {
+    throw new Error(`Work item not found: ${work_id}`);
+  }
+
+  // Find the action item for this work
+  const actionItem = plan.action_items.find(
+    ai => ai.id === work.action_item_id
+  );
+  if (!actionItem) {
+    throw new Error(`Action item not found for work: ${work_id}`);
+  }
 
   if (actionItem.depends_on.length === 0) {
     // No dependencies, ready immediately
@@ -653,11 +1122,11 @@ function checkDependencies(work_id: string): Promise<void> {
     return;
   }
 
-  // Check all dependencies
-  const dependencyWorks = await db.work_items.find({
-    job_id: work.job_id,
-    action_item_id: { $in: actionItem.depends_on }
-  });
+  // Use DatabaseClient to get dependency work items
+  const dependencyWorks = await db.getWorkItemsByActionItemIds(
+    work.job_id,
+    actionItem.depends_on
+  );
 
   const allCompleted = dependencyWorks.every(w => w.status === "completed");
 
@@ -670,26 +1139,54 @@ function checkDependencies(work_id: string): Promise<void> {
 ### Parallel Execution Coordinator
 
 ```typescript
-async function executeParallel(workItems: WorkItem[]): Promise<void> {
+/**
+ * Result of executing a single work item
+ */
+interface WorkExecutionResult {
+  work_id: string;
+  success: boolean;
+  error?: string;
+}
+
+/**
+ * Execute multiple work items in parallel.
+ * Uses Promise.allSettled to ensure all items are attempted regardless of failures.
+ *
+ * @param lifecycle - WorkLifecycle instance for transitions
+ * @param workItems - Work items to execute in parallel
+ * @param executeWorkItem - Function that executes a single work item
+ */
+async function executeParallel(
+  lifecycle: WorkLifecycle,
+  workItems: WorkItem[],
+  executeWorkItem: (work: WorkItem) => Promise<WorkExecutionResult>
+): Promise<WorkExecutionResult[]> {
   // Execute all items in parallel
   const promises = workItems.map(work =>
-    executeWorkItem(work).catch(error => ({
+    executeWorkItem(work).catch((error: Error) => ({
       work_id: work.work_id,
+      success: false,
       error: error.message
     }))
   );
 
   const results = await Promise.allSettled(promises);
+  const executionResults: WorkExecutionResult[] = [];
 
-  // Handle results
+  // Process results
   for (const result of results) {
-    if (result.status === "rejected") {
-      // Handle failure
-      await lifecycle.transition(result.reason.work_id, "execution_failed", {
-        error: result.reason.message
-      });
+    if (result.status === "fulfilled") {
+      executionResults.push(result.value);
+
+      // If execution failed, the work item is already in a terminal state
+      // (handled within executeWorkItem)
+    } else {
+      // Unexpected rejection (executeWorkItem should not throw)
+      console.error("Unexpected rejection in parallel execution:", result.reason);
     }
   }
+
+  return executionResults;
 }
 ```
 
@@ -717,76 +1214,189 @@ TODO #1: "Identify competitors"
 ### Spawning Implementation
 
 ```typescript
+/**
+ * Request to spawn new TODO items from a parent TODO.
+ */
 interface SpawnRequest {
   job_id: string;
+  plan_id: string;
   parent_todo_id: number;
   new_todos: Array<{
     item: string;
     priority: number;
     depends_on: number[];
-    agent_id: string;
+    deliverable_id: string;
+    agent_id: string | null;
     template_id: string;
+    resource_type: "AGENT" | "SELF";
+    estimated_cost: number;
   }>;
 }
 
-async function spawnTodos(request: SpawnRequest): Promise<ActionItem[]> {
-  const plan = await db.plans.findOne({ job_id: request.job_id });
+/**
+ * Result of spawning new TODOs
+ */
+interface SpawnResult {
+  spawned_items: ActionItem[];
+  created_work_ids: string[];
+}
 
-  // Generate new IDs
-  const maxId = Math.max(...plan.action_items.map(a => a.id));
-  const newTodos = request.new_todos.map((todo, index) => ({
+/**
+ * Spawn new TODO items from a parent TODO.
+ * Uses DatabaseClient for all database operations.
+ *
+ * @param db - DatabaseClient instance
+ * @param request - The spawn request with new TODO definitions
+ * @param emitEvent - Function to emit events
+ */
+async function spawnTodos(
+  db: DatabaseClient,
+  request: SpawnRequest,
+  emitEvent: (event: WorkLifecycleEvent) => void
+): Promise<SpawnResult> {
+  // Use DatabaseClient to get plan
+  const plan = await db.getPlan(request.plan_id);
+  if (!plan) {
+    throw new Error(`Plan not found: ${request.plan_id}`);
+  }
+
+  // Generate new IDs (incrementing from max existing ID)
+  const maxId = Math.max(0, ...plan.action_items.map(a => a.id));
+  const newActionItems: ActionItem[] = request.new_todos.map((todo, index) => ({
     id: maxId + index + 1,
     item: todo.item,
     priority: todo.priority,
     depends_on: todo.depends_on,
-    status: "pending" as const,
+    deliverable_id: todo.deliverable_id,
     agent_id: todo.agent_id,
     template_id: todo.template_id,
-    spawned_from: request.parent_todo_id
+    estimated_cost: todo.estimated_cost,
+    status: "pending" as const,
+    work_id: null,
+    resource_type: todo.resource_type
   }));
 
-  // Add to plan
-  await db.plans.updateOne(
-    { job_id: request.job_id },
-    { $push: { action_items: { $each: newTodos } } }
-  );
+  // Use DatabaseClient to add action items to plan
+  await db.pushActionItemsToPlan(request.plan_id, newActionItems);
 
-  // Create work items
-  for (const todo of newTodos) {
-    await createWorkItem(request.job_id, todo);
+  // Create work items for each new action item
+  const createdWorkIds: string[] = [];
+  for (const actionItem of newActionItems) {
+    const workItem = await db.createWorkItem({
+      work_id: `work_${Date.now()}_${actionItem.id}`,
+      job_id: request.job_id,
+      plan_id: request.plan_id,
+      action_item_id: actionItem.id,
+      status: "pending",
+      attempt: 1,
+      max_attempts: 3,
+      action: {
+        item: actionItem.item,
+        deliverable_id: actionItem.deliverable_id,
+        requirements: [] // Will be populated during prompting
+      },
+      agent: null,
+      prompt: null,
+      external_ref: null,
+      output: null,
+      verification: null,
+      retry_context: null,
+      payment: null,
+      token_usage: {
+        internal: [],
+        external: null,
+        total_internal_cost_usd: 0,
+        total_external_cost_usd: 0,
+        total_cost_usd: 0
+      },
+      retries: [],
+      started_at: null,
+      completed_at: null
+    });
+    createdWorkIds.push(workItem.work_id);
   }
 
-  // Emit event
+  // Emit event for spawned TODOs
   emitEvent({
     type: "todo:spawned",
     parent_id: request.parent_todo_id,
-    new_todos: newTodos
+    new_todos: newActionItems
   });
 
-  return newTodos;
+  return {
+    spawned_items: newActionItems,
+    created_work_ids: createdWorkIds
+  };
 }
 ```
 
 ### Spawning Triggers
 
+Spawn triggers define conditions under which new TODOs should be created based on work item output.
+
 ```typescript
-const SPAWN_TRIGGERS = [
+/**
+ * Output structure that may trigger spawning (for list-type outputs)
+ */
+interface SpawnableOutput {
+  items?: Array<{ name: string; [key: string]: unknown }>;
+  needs_detail?: boolean;
+}
+
+/**
+ * Definition for a new TODO to spawn
+ */
+interface SpawnedTodoDefinition {
+  item: string;
+  priority: number;
+}
+
+/**
+ * A spawn trigger defines when and what new TODOs to create.
+ */
+interface SpawnTrigger {
+  /** Unique identifier for this trigger */
+  id: string;
+  /** Human-readable description */
+  description: string;
+  /** Condition function - returns true if trigger should fire */
+  condition: (work: WorkItem, output: SpawnableOutput) => boolean;
+  /** Generate new TODO definitions when condition is met */
+  spawn: (work: WorkItem, output: SpawnableOutput) => SpawnedTodoDefinition[];
+}
+
+/**
+ * Registry of spawn triggers.
+ * Add new triggers here as needed.
+ */
+const SPAWN_TRIGGERS: SpawnTrigger[] = [
+  // -------------------------------------------------------------------------
   // Output reveals items needing individual attention
+  // -------------------------------------------------------------------------
   {
-    condition: (output: any) =>
-      output.items && output.items.length > 1 && output.needs_detail,
-    spawn: (output: any) =>
-      output.items.map(item => ({
+    id: "detail_required_for_list_items",
+    description: "Spawns detailed research tasks for each item in a list output",
+    condition: (work: WorkItem, output: SpawnableOutput) =>
+      output.items !== undefined &&
+      output.items.length > 1 &&
+      output.needs_detail === true,
+    spawn: (_work: WorkItem, output: SpawnableOutput) =>
+      (output.items ?? []).map(item => ({
         item: `Research ${item.name} in detail`,
         priority: 2
       }))
   },
 
+  // -------------------------------------------------------------------------
   // Quality issues require verification
+  // -------------------------------------------------------------------------
   {
+    id: "quality_review_needed",
+    description: "Spawns a review task when verification score is marginal",
     condition: (work: WorkItem) =>
-      work.verification?.score >= 0.80 &&
-      work.verification?.score < 0.90,
+      work.verification !== null &&
+      work.verification.score >= 0.80 &&
+      work.verification.score < 0.90,
     spawn: () => [{
       item: "Review and verify output quality",
       priority: 1
@@ -811,56 +1421,120 @@ When user continues a job with feedback, work items are created with specific ac
 ### Continuation Work Item Creation
 
 ```typescript
-interface ContinuationWorkItem extends WorkItem {
-  action_type: "CREATE_NEW" | "MODIFY_EXISTING" | "REPLACE_EXISTING" | "RERUN_WITH_CONTEXT";
-  original_work_id?: string;  // For MODIFY/REPLACE/RERUN
+/**
+ * Extended WorkItem for continuation scenarios.
+ * Includes action type and reference to original work.
+ */
+interface ContinuationWorkItemData {
+  action_type: ContinuationActionType;
+  original_work_id?: string;
+  modification_context?: {
+    specific_item: string;
+    current_value: unknown;
+  };
 }
 
+/**
+ * Extended ActionItem for continuation scenarios.
+ */
+interface ContinuationActionItem extends ActionItem {
+  action_type: ContinuationActionType;
+  original_work_id?: string;
+  specific_item?: string;
+  current_value?: unknown;
+}
+
+/**
+ * Create a work item for a continuation action.
+ * Uses DatabaseClient for all database operations.
+ *
+ * @param db - DatabaseClient instance
+ * @param job_id - The job ID
+ * @param plan_id - The plan ID
+ * @param action_item - The continuation action item
+ * @param emitEvent - Function to emit events
+ */
 async function createContinuationWorkItem(
+  db: DatabaseClient,
   job_id: string,
-  action_item: ActionItem,
-  action_type: ContinuationWorkItem["action_type"]
+  plan_id: string,
+  action_item: ContinuationActionItem,
+  emitEvent: (event: WorkLifecycleEvent) => void
 ): Promise<WorkItem> {
-  const work: Partial<ContinuationWorkItem> = {
-    work_id: generateWorkId(),
-    job_id,
-    action_item_id: action_item.id,
-    action_type,
-    attempt: 1,
-    created_at: new Date()
-  };
+  const work_id = `work_${Date.now()}_${action_item.id}`;
 
-  switch (action_type) {
+  // Determine initial status based on action type
+  let initialStatus: WorkItemStatus;
+  switch (action_item.action_type) {
     case "CREATE_NEW":
-      work.status = "pending";
-      break;
-
-    case "MODIFY_EXISTING":
-      // Skip to prompting with previous output loaded
-      work.status = "prompting";
-      work.original_work_id = action_item.original_work_id;
-      work.context_loaded = await loadFullContent(action_item.original_work_id);
-      break;
-
     case "REPLACE_EXISTING":
-      work.status = "pending";
-      work.original_work_id = action_item.original_work_id;
-      // Mark original as superseded
-      await db.work_items.updateOne(
-        { work_id: action_item.original_work_id },
-        { $set: { superseded_by: work.work_id } }
-      );
-      break;
-
     case "RERUN_WITH_CONTEXT":
-      work.status = "pending";
-      work.original_work_id = action_item.original_work_id;
-      // Context refs already updated by Planning Agent
+      initialStatus = "pending";
+      break;
+    case "MODIFY_EXISTING":
+      // Skip to prompting - we already have the content
+      initialStatus = "prompting";
       break;
   }
 
-  await db.work_items.insertOne(work);
-  return work as WorkItem;
+  // Build work item using DatabaseClient
+  const workItem = await db.createWorkItem({
+    work_id,
+    job_id,
+    plan_id,
+    action_item_id: action_item.id,
+    status: initialStatus,
+    attempt: 1,
+    max_attempts: 3,
+    action: {
+      item: action_item.item,
+      deliverable_id: action_item.deliverable_id,
+      requirements: []
+    },
+    agent: null,
+    prompt: null,
+    external_ref: null,
+    output: null,
+    verification: null,
+    retry_context: action_item.action_type === "MODIFY_EXISTING" ? {
+      previous_attempt: 0,
+      previous_output: action_item.current_value ?? null,
+      verification_feedback: {
+        score: 0,
+        reasoning: "",
+        issues: [],
+        suggestions: []
+      }
+    } : null,
+    payment: null,
+    token_usage: {
+      internal: [],
+      external: null,
+      total_internal_cost_usd: 0,
+      total_external_cost_usd: 0,
+      total_cost_usd: 0
+    },
+    retries: [],
+    started_at: action_item.action_type === "MODIFY_EXISTING" ? new Date() : null,
+    completed_at: null
+  });
+
+  // Handle REPLACE_EXISTING - mark original as superseded
+  if (action_item.action_type === "REPLACE_EXISTING" && action_item.original_work_id) {
+    await db.updateWorkItemFields(action_item.original_work_id, {
+      // Note: superseded_by is not in the base WorkItem type
+      // This would need to be added or handled via a separate method
+    });
+  }
+
+  // Emit creation event
+  emitEvent({
+    type: "work:created",
+    work_id,
+    action_item_id: action_item.id
+  });
+
+  return workItem;
 }
 ```
 
@@ -926,20 +1600,70 @@ type WorkLifecycleEvent =
 ### WorkLifecycle
 
 ```typescript
-interface WorkLifecycle {
-  // State transitions
-  transition(work_id: string, trigger: string, payload?: any): Promise<TransitionResult>;
+/**
+ * Retry type for canRetry check
+ */
+type RetryType = keyof RetryLimits;
 
-  // Queries
+/**
+ * WorkLifecycle interface - the main API for work item state management.
+ * All methods use DatabaseClient internally (injected via constructor).
+ */
+interface IWorkLifecycle {
+  /**
+   * Execute a state transition for a work item.
+   * Uses typed triggers and payloads.
+   *
+   * @param work_id - The work item ID
+   * @param trigger - The transition trigger
+   * @param payload - Optional payload (type depends on trigger)
+   */
+  transition<T extends TransitionTrigger>(
+    work_id: string,
+    trigger: T,
+    payload?: PayloadFor<T>
+  ): Promise<TransitionResult>;
+
+  /**
+   * Get all work items that are ready for execution.
+   * Returns items in "ready" status for the given job.
+   *
+   * @param job_id - The job ID
+   */
   getActionable(job_id: string): Promise<WorkItem[]>;
+
+  /**
+   * Check if a work item can retry for a specific retry type.
+   *
+   * @param work_id - The work item ID
+   * @param type - The type of retry to check
+   */
   canRetry(work_id: string, type: RetryType): Promise<boolean>;
 
-  // Dynamic spawning
-  spawnTodos(request: SpawnRequest): Promise<ActionItem[]>;
+  /**
+   * Spawn new TODO items from a parent TODO.
+   *
+   * @param request - The spawn request
+   */
+  spawnTodos(request: SpawnRequest): Promise<SpawnResult>;
 
-  // Dependency checking
-  checkDependencies(work_id: string): Promise<void>;
-  onWorkCompleted(work_id: string): Promise<void>;  // Checks dependents
+  /**
+   * Check if a work item's dependencies are satisfied.
+   * If all dependencies are completed, transitions to "ready".
+   *
+   * @param work_id - The work item to check
+   * @param plan - The plan containing action items
+   */
+  checkDependencies(work_id: string, plan: Plan): Promise<void>;
+
+  /**
+   * Called when a work item completes.
+   * Checks all pending items that depend on this one.
+   *
+   * @param work_id - The completed work item ID
+   * @param plan - The plan containing action items
+   */
+  onWorkCompleted(work_id: string, plan: Plan): Promise<void>;
 }
 ```
 
@@ -1046,7 +1770,7 @@ interface ContinuationActionItem extends ActionItem {
   action_type: ContinuationActionType;
   original_work_id?: string;      // For MODIFY/REPLACE/RERUN
   specific_item?: string;         // For MODIFY (e.g., "headlines[2]")
-  current_value?: any;            // Current value being modified
+  current_value?: unknown;        // Current value being modified (unknown used for flexibility with type narrowing)
 }
 ```
 
@@ -1061,70 +1785,42 @@ interface ContinuationActionItem extends ActionItem {
 
 ### State Handling by Action Type
 
+The `createContinuationWorkItem` function (defined above) handles all four action types with proper initial state and context setup. See the implementation in the "Continuation Work Item Creation" section.
+
+**Key behaviors by action type:**
+
+| Action Type | Initial Status | Special Handling |
+|-------------|---------------|------------------|
+| `CREATE_NEW` | `pending` | Normal lifecycle flow |
+| `MODIFY_EXISTING` | `prompting` | Skips pending, loads `retry_context` with previous output |
+| `REPLACE_EXISTING` | `pending` | Marks original work item as superseded |
+| `RERUN_WITH_CONTEXT` | `pending` | Context refs updated by Planning Agent before creation |
+
 ```typescript
-async function createContinuationWorkItem(
-  job_id: string,
-  action_item: ContinuationActionItem
-): Promise<WorkItem> {
-  const work: Partial<WorkItem> = {
-    work_id: generateWorkId(),
-    job_id,
-    action_item_id: action_item.id,
-    action_type: action_item.action_type,
-    attempt: 1,
-    created_at: new Date()
-  };
-
-  switch (action_item.action_type) {
-    case "CREATE_NEW":
-      // Normal flow - start from pending
-      work.status = "pending";
-      break;
-
-    case "MODIFY_EXISTING":
-      // Skip to prompting - we already have the content
-      work.status = "prompting";
-      work.original_work_id = action_item.original_work_id;
-      work.modification_context = {
-        specific_item: action_item.specific_item,
-        current_value: action_item.current_value
-      };
-      break;
-
-    case "REPLACE_EXISTING":
-      // Start fresh but mark original as superseded
-      work.status = "pending";
-      work.original_work_id = action_item.original_work_id;
-      await markSuperseded(action_item.original_work_id, work.work_id);
-      break;
-
-    case "RERUN_WITH_CONTEXT":
-      // Start fresh with updated context
-      work.status = "pending";
-      work.original_work_id = action_item.original_work_id;
-      // Context refs already updated by Planning Agent
-      break;
-  }
-
-  await db.work_items.insertOne(work);
-  emitEvent({ type: "work:created", work_id: work.work_id, action_item_id: action_item.id });
-
-  return work as WorkItem;
-}
-
+/**
+ * Mark a work item as superseded by a newer version.
+ * Uses DatabaseClient for database operations.
+ *
+ * Note: The WorkItem type would need to be extended with optional
+ * superseded_by and superseded_at fields for full continuation support.
+ *
+ * @param db - DatabaseClient instance
+ * @param original_work_id - The work item being replaced
+ * @param new_work_id - The replacement work item
+ */
 async function markSuperseded(
+  db: DatabaseClient,
   original_work_id: string,
   new_work_id: string
 ): Promise<void> {
-  await db.work_items.updateOne(
-    { work_id: original_work_id },
-    {
-      $set: {
-        superseded_by: new_work_id,
-        superseded_at: new Date()
-      }
-    }
-  );
+  // This requires extending WorkItem type or using a separate tracking mechanism
+  // For now, this can be tracked in the Job's versions array
+  // or by adding superseded_by/superseded_at to WorkItem type
+  await db.updateWorkItemFields(original_work_id, {
+    // Extended fields (would need to be added to WorkItem type):
+    // superseded_by: new_work_id,
+    // superseded_at: new Date()
+  });
 }
 ```
 
@@ -1195,42 +1891,93 @@ const CONTINUATION_LOADING_PATTERNS: Array<{
 
 ### Dependency Cascade on Modification
 
+When modifying a work item, we need to check if any downstream items depend on it and may need re-running.
+
 ```typescript
-// When modifying an item, check if anything depends on it
+/**
+ * Result of cascade analysis
+ */
+interface CascadeAnalysisResult {
+  needs_cascade: boolean;
+  items_to_rerun: number[];
+}
 
+/**
+ * Check if modifying a work item requires cascading updates to dependents.
+ * Uses DatabaseClient for all database operations.
+ *
+ * @param db - DatabaseClient instance
+ * @param job_id - The job ID
+ * @param plan_id - The plan ID
+ * @param modified_work_id - The work item that was modified
+ * @param invokePlanningLLM - Function to invoke Planning Agent for decisions
+ */
 async function checkDependencyCascade(
+  db: DatabaseClient,
   job_id: string,
-  modified_work_id: string
-): Promise<ActionItem[]> {
-  const modifiedWork = await db.work_items.findOne({ work_id: modified_work_id });
-  const plan = await db.plans.findOne({ job_id });
+  plan_id: string,
+  modified_work_id: string,
+  invokePlanningLLM: (input: CascadeDecisionInput) => Promise<CascadeAnalysisResult>
+): Promise<ContinuationActionItem[]> {
+  // Use DatabaseClient to get modified work item
+  const modifiedWork = await db.getWorkItem(modified_work_id);
+  if (!modifiedWork) {
+    throw new Error(`Work item not found: ${modified_work_id}`);
+  }
 
-  // Find items that depended on the modified action item
+  // Use DatabaseClient to get plan
+  const plan = await db.getPlan(plan_id);
+  if (!plan) {
+    throw new Error(`Plan not found: ${plan_id}`);
+  }
+
+  // Find items that depend on the modified action item
   const dependents = plan.action_items.filter(item =>
     item.depends_on.includes(modifiedWork.action_item_id)
   );
 
   if (dependents.length === 0) {
-    return [];  // No cascade needed
+    return []; // No cascade needed
   }
 
-  // Planning Agent decides if dependents need re-running
+  // Ask Planning Agent to decide if dependents need re-running
   const cascadeDecision = await invokePlanningLLM({
     task: "Determine cascade impact",
     modified_item: modifiedWork.action,
-    modification: "headline #3 shortened",
-    dependents: dependents.map(d => d.item),
+    modification_description: `Modified ${modifiedWork.action.item}`,
+    dependents: dependents.map(d => ({
+      id: d.id,
+      item: d.item
+    })),
     question: "Do any dependents need to be updated due to this change?"
   });
 
   if (cascadeDecision.needs_cascade) {
-    return cascadeDecision.items_to_rerun.map(id => ({
-      ...plan.action_items.find(a => a.id === id),
-      action_type: "RERUN_WITH_CONTEXT"
-    }));
+    return cascadeDecision.items_to_rerun.map(id => {
+      const actionItem = plan.action_items.find(a => a.id === id);
+      if (!actionItem) {
+        throw new Error(`Action item not found: ${id}`);
+      }
+      return {
+        ...actionItem,
+        action_type: "RERUN_WITH_CONTEXT" as const,
+        original_work_id: modified_work_id
+      };
+    });
   }
 
   return [];
+}
+
+/**
+ * Input for cascade decision LLM call
+ */
+interface CascadeDecisionInput {
+  task: string;
+  modified_item: WorkItem["action"];
+  modification_description: string;
+  dependents: Array<{ id: number; item: string }>;
+  question: string;
 }
 ```
 
