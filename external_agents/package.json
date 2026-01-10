@@ -1,0 +1,43 @@
+{
+  "name": "@agentstack/external-agent-mcp",
+  "version": "1.0.0",
+  "description": "MCP-based external agent template for AgentsStack - Image generation using OpenRouter",
+  "main": "dist/index.js",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "type-check": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "keywords": [
+    "agentstack",
+    "mcp",
+    "model-context-protocol",
+    "external-agent",
+    "image-generation",
+    "openrouter"
+  ],
+  "author": "AgentsStack",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.4",
+    "express": "^4.21.2",
+    "redis": "^4.7.0",
+    "zod": "^3.24.1",
+    "uuid": "^9.0.1",
+    "pino": "^9.6.0",
+    "pino-pretty": "^13.0.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^20.17.12",
+    "@types/uuid": "^9.0.8",
+    "typescript": "^5.7.2",
+    "tsx": "^4.19.2"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
