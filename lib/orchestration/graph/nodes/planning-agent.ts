@@ -204,44 +204,56 @@ Respond with valid JSON only.`;
  * Invoke planning LLM via OpenRouter
  */
 async function invokePlanningLLM(
+  ctx: RequestContext,
   input: PlanningAgentInput
 ): Promise<LLMInvokeResult<PlanningAgentOutput>> {
   const startTime = Date.now();
 
+  logger.info(ctx, `operation=invoke_planning_llm model=${PLANNING_AGENT_MODEL} status=started`);
+
   const userContent = formatPlanningInput(input);
 
-  const response = await openrouter.chat.completions.create({
-    model: PLANNING_AGENT_MODEL,
-    messages: [
-      { role: "system", content: PLANNING_AGENT_SYSTEM_PROMPT },
-      { role: "user", content: userContent },
-    ],
-    temperature: 0.7,
-    max_tokens: 4096,
-    response_format: { type: "json_object" },
-  });
-
-  const usage = response.usage;
-  const content = response.choices[0]?.message?.content ?? "{}";
-  const data = JSON.parse(content) as PlanningAgentOutput;
-
-  return {
-    data,
-    operation: {
-      operation_id: generateOperationId(),
-      timestamp: new Date(),
-      operation_type: "planning_agent",
+  try {
+    const response = await openrouter.chat.completions.create({
       model: PLANNING_AGENT_MODEL,
-      native_tokens_prompt: usage?.prompt_tokens,
-      native_tokens_completion: usage?.completion_tokens,
-      total_cost: calculateCostFromUsage(PLANNING_AGENT_MODEL, usage ?? {}),
-      metadata: {
-        duration_ms: Date.now() - startTime,
-        finish_reason: response.choices[0]?.finish_reason,
-        is_retry: input.is_plan_retry ?? false,
+      messages: [
+        { role: "system", content: PLANNING_AGENT_SYSTEM_PROMPT },
+        { role: "user", content: userContent },
+      ],
+      temperature: 0.7,
+      max_tokens: 4096,
+      response_format: { type: "json_object" },
+    });
+
+    const usage = response.usage;
+    const content = response.choices[0]?.message?.content ?? "{}";
+    const data = JSON.parse(content) as PlanningAgentOutput;
+    const durationMs = Date.now() - startTime;
+
+    logger.info(ctx, `operation=invoke_planning_llm model=${PLANNING_AGENT_MODEL} input_tokens=${usage?.prompt_tokens ?? 0} output_tokens=${usage?.completion_tokens ?? 0} duration_ms=${durationMs} status=completed`);
+
+    return {
+      data,
+      operation: {
+        operation_id: generateOperationId(),
+        timestamp: new Date(),
+        operation_type: "planning_agent",
+        model: PLANNING_AGENT_MODEL,
+        native_tokens_prompt: usage?.prompt_tokens,
+        native_tokens_completion: usage?.completion_tokens,
+        total_cost: calculateCostFromUsage(PLANNING_AGENT_MODEL, usage ?? {}),
+        metadata: {
+          duration_ms: durationMs,
+          finish_reason: response.choices[0]?.finish_reason,
+          is_retry: input.is_plan_retry ?? false,
+        },
       },
-    },
-  };
+    };
+  } catch (error) {
+    const durationMs = Date.now() - startTime;
+    logger.error(ctx, `operation=invoke_planning_llm model=${PLANNING_AGENT_MODEL} duration_ms=${durationMs} status=failed`, error instanceof Error ? error : undefined);
+    throw error;
+  }
 }
 
 /**
@@ -460,7 +472,7 @@ async function planningAgentNodeImpl(ctx: RequestContext, state: OrchestrationSt
   };
 
   // Invoke LLM
-  const result = await invokePlanningLLM(planInput);
+  const result = await invokePlanningLLM(ctx, planInput);
 
   // Calculate total estimated cost from action items
   const totalEstimatedCost = result.data.action_items

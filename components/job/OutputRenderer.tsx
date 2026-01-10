@@ -62,7 +62,7 @@ export function OutputRenderer({ content }: OutputRendererProps) {
             "
           />
           {content.data.alt && (
-            <p className="mt-2 text-xs sm:text-sm text-muted-foreground">
+            <p className="mt-2 text-xs sm:text-sm text-foreground-muted">
               {content.data.alt}
             </p>
           )}
@@ -73,7 +73,7 @@ export function OutputRenderer({ content }: OutputRendererProps) {
       return (
         <pre
           className="
-            bg-muted p-3 sm:p-4 rounded-lg
+            bg-background-subtle p-3 sm:p-4 rounded-lg
             overflow-x-auto
             text-xs sm:text-sm
             border border-border
@@ -90,7 +90,7 @@ export function OutputRenderer({ content }: OutputRendererProps) {
         <div
           className="
             prose prose-sm sm:prose
-            dark:prose-invert
+            prose-gray
             max-w-none
             [&_h1]:text-lg [&_h1]:sm:text-xl
             [&_h2]:text-base [&_h2]:sm:text-lg

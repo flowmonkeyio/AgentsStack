@@ -51,7 +51,7 @@ export async function initiatePayment(
   );
 
   // 1. Get current budget for audit
-  const job = await db.getJob(params.job_id);
+  const job = await db.getJob(ctx, params.job_id);
   if (!job) {
     logger.error(
       ctx,
@@ -64,7 +64,7 @@ export async function initiatePayment(
   const tx_id = generateTxId();
   logger.info(ctx, `operation=initiate_payment work_id=${params.work_id} tx_id=${tx_id} status=creating_transaction`);
 
-  await db.createTransaction({
+  await db.createTransaction(ctx, {
     tx_id,
     job_id: params.job_id,
     work_id: params.work_id,
@@ -85,7 +85,7 @@ export async function initiatePayment(
   });
 
   // 3. Update work item payment status to processing
-  await db.updateWorkItemPayment(params.work_id, {
+  await db.updateWorkItemPayment(ctx, params.work_id, {
     status: "processing",
     amount: params.amount,
     tx_hash: null,
@@ -128,11 +128,11 @@ export async function onPaymentConfirmed(
   const now = new Date();
 
   // 1. UPDATE existing transaction (not create new)
-  await db.updateTransactionStatus(params.tx_id, "confirmed");
-  await db.updateTransactionTxHash(params.tx_id, params.tx_hash);
+  await db.updateTransactionStatus(ctx, params.tx_id, "confirmed");
+  await db.updateTransactionTxHash(ctx, params.tx_id, params.tx_hash);
 
   // 2. Update work item payment
-  await db.updateWorkItemPayment(params.work_id, {
+  await db.updateWorkItemPayment(ctx, params.work_id, {
     status: "confirmed",
     tx_hash: params.tx_hash,
     confirmed_at: now,
@@ -140,9 +140,9 @@ export async function onPaymentConfirmed(
   });
 
   // 3. Update job budget
-  const job = await db.getJob(params.job_id);
+  const job = await db.getJob(ctx, params.job_id);
   if (job) {
-    await db.updateJobBudget(params.job_id, {
+    await db.updateJobBudget(ctx, params.job_id, {
       ...job.budget,
       spent: job.budget.spent + params.amount,
       remaining: job.budget.remaining - params.amount,
@@ -154,12 +154,12 @@ export async function onPaymentConfirmed(
   }
 
   // 4. Update agent stats
-  await db.updateAgentStats(params.agent_id, {
+  await db.updateAgentStats(ctx, params.agent_id, {
     jobs_completed: 1, // Incremented via $inc internally
   });
 
   // 5. Update work item status to completed
-  await db.updateWorkItemStatus(params.work_id, "completed");
+  await db.updateWorkItemStatus(ctx, params.work_id, "completed");
 
   logger.info(
     ctx,
@@ -187,16 +187,16 @@ export async function onPaymentFailed(
   );
 
   // 1. Update transaction status
-  await db.updateTransactionStatus(params.tx_id, "failed");
+  await db.updateTransactionStatus(ctx, params.tx_id, "failed");
 
   // 2. Update work item payment
-  await db.updateWorkItemPayment(params.work_id, {
+  await db.updateWorkItemPayment(ctx, params.work_id, {
     status: "failed",
     error: params.error,
   });
 
   // 3. Update work item status
-  await db.updateWorkItemStatus(params.work_id, "failed");
+  await db.updateWorkItemStatus(ctx, params.work_id, "failed");
 
   logger.error(
     ctx,

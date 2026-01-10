@@ -10,7 +10,7 @@
     "type-check": "tsc --noEmit"
   },
   "dependencies": {
-    "@clerk/nextjs": "^5.7.5",
+    "@clerk/nextjs": "^6.36.7",
     "@coinbase/coinbase-sdk": "^0.10.0",
     "@langchain/core": "^0.3.0",
     "@langchain/langgraph": "^0.2.0",
@@ -21,6 +21,7 @@
     "openai": "^4.77.3",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
+    "react-markdown": "^10.1.0",
     "tailwind-merge": "^2.6.0",
     "uuid": "^9.0.1",
     "voyageai": "^0.0.3-2",

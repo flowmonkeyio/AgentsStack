@@ -12,14 +12,12 @@ const isPublicRoute = createRouteMatcher([
   "/sign-up(.*)",
   "/api/agents",
   "/api/agents/discover",
-  "/api/webhooks(.*)", // Webhook routes for external agents
+  "/api/webhooks(.*)",
 ]);
 
 export default clerkMiddleware(async (auth, request) => {
   if (!isPublicRoute(request)) {
-    // Clerk v6: auth.protect() returns a promise
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await (auth as any).protect();
+    await auth().protect();
   }
 });
 

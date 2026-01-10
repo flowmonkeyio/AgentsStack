@@ -59,7 +59,7 @@ async function runPollCycle(ctx: RequestContext, deps: DispatchDependencies): Pr
   logger.debug(ctx, `operation=poll_cycle_start`);
 
   // Find items needing poll
-  const needsPoll = await db.getItemsNeedingPoll();
+  const needsPoll = await db.getItemsNeedingPoll(ctx);
 
   logger.debug(ctx, `operation=poll_cycle items_needing_poll=${needsPoll.length}`);
 
@@ -72,7 +72,7 @@ async function runPollCycle(ctx: RequestContext, deps: DispatchDependencies): Pr
   }
 
   // Find stale items (timeout exceeded)
-  const staleItems = await db.getStaleItems();
+  const staleItems = await db.getStaleItems(ctx);
 
   logger.debug(ctx, `operation=poll_cycle stale_items=${staleItems.length}`);
 
@@ -206,11 +206,11 @@ export async function recoverInFlightWork(
   logger.info(ctx, `operation=recover_in_flight_work status=starting`);
 
   // Find active jobs
-  const activeJobs = await findActiveJobs(db);
+  const activeJobs = await findActiveJobs(ctx, db);
   logger.info(ctx, `operation=recover_in_flight_work active_jobs=${activeJobs.length}`);
 
   for (const job of activeJobs) {
-    const workItems = await db.getWorkItemsByJob(job.job_id);
+    const workItems = await db.getWorkItemsByJob(ctx, job.job_id);
     logger.info(ctx, `operation=recover_in_flight_work job_id=${job.job_id} work_items=${workItems.length}`);
 
     for (const work of workItems) {
@@ -228,12 +228,16 @@ export async function recoverInFlightWork(
 /**
  * Find all jobs that are in an active state.
  *
+ * @param ctx - Request context for tracing
  * @param db - Database client
  * @returns Array of active jobs
  */
 async function findActiveJobs(
+  ctx: RequestContext,
   db: DatabaseClient
 ): Promise<Array<{ job_id: string }>> {
+  logger.debug(ctx, "operation=find_active_jobs status=started");
+
   // Note: Would need a getJobsByStatus method on DatabaseClient
   // For now, this is a placeholder that returns an empty array
   // The actual implementation would query jobs with status in:
@@ -243,9 +247,10 @@ async function findActiveJobs(
   // A proper implementation would be:
   // return db.getJobsByStatus(["planning", "plan_verification", "executing"]);
 
-  // Note: This function doesn't take ctx as it's an internal helper.
-  // Logging is done by the caller.
-  return [];
+  const jobs: Array<{ job_id: string }> = [];
+
+  logger.debug(ctx, `operation=find_active_jobs count=${jobs.length} status=completed`);
+  return jobs;
 }
 
 /**
@@ -312,7 +317,7 @@ async function restartPrompting(
   const { db } = deps;
 
   // Reset to ready status so it can be picked up by the execution loop
-  await db.updateWorkItemStatus(work_id, "ready");
+  await db.updateWorkItemStatus(ctx, work_id, "ready");
 
   logger.info(ctx, `operation=restart_prompting work_id=${work_id} action=reset_to_ready`);
 }
@@ -419,8 +424,8 @@ export async function getRecoveryHealthStatus(
   // Note: This would benefit from more specialized database methods
   // For now, we use available methods
 
-  const needsPoll = await db.getItemsNeedingPoll();
-  const staleItems = await db.getStaleItems();
+  const needsPoll = await db.getItemsNeedingPoll(ctx);
+  const staleItems = await db.getStaleItems(ctx);
 
   const statusCounts: Record<string, number> = {};
 

@@ -104,7 +104,7 @@ export async function getContextSummary(
   db: DatabaseClient
 ): Promise<string> {
   logger.debug(ctx, `operation=get_context_summary job_id=${job_id}`);
-  const job = await db.getJob(job_id);
+  const job = await db.getJob(ctx, job_id);
   return job?.context_summary ?? "";
 }
 
@@ -123,7 +123,7 @@ export async function getContextRefs(
   db: DatabaseClient
 ): Promise<ContextRef[]> {
   logger.debug(ctx, `operation=get_context_refs job_id=${job_id}`);
-  const workItems = await db.getWorkItemsByJob(job_id);
+  const workItems = await db.getWorkItemsByJob(ctx, job_id);
   const completedItems = workItems.filter((w) => w.status === "completed");
 
   const refs = completedItems
@@ -153,7 +153,7 @@ export async function loadFullContent(
   db: DatabaseClient
 ): Promise<unknown> {
   logger.debug(ctx, `operation=load_full_content work_id=${work_id}`);
-  const work = await db.getWorkItem(work_id);
+  const work = await db.getWorkItem(ctx, work_id);
   return work?.output?.content ?? null;
 }
 
@@ -197,6 +197,7 @@ export async function prepareContextForPrompt(
     // Standard task: load only dependencies
     logger.debug(ctx, `operation=prepare_context job_id=${job_id} mode=load_dependencies deps_count=${action_item.depends_on.length}`);
     const dependencyWorks = await db.getWorkItemsByActionItemIds(
+      ctx,
       job_id,
       action_item.depends_on
     );
@@ -245,6 +246,7 @@ export async function loadContextForTask(
   } else if (loadMode === "dependencies_only" && dependsOn.length > 0) {
     // Load only dependencies
     const dependencyWorks = await db.getWorkItemsByActionItemIds(
+      ctx,
       job_id,
       dependsOn
     );
@@ -420,7 +422,7 @@ export async function updateContextSummary(
 ): Promise<LLMOperation | null> {
   logger.debug(ctx, `operation=update_context_summary job_id=${job_id} work_id=${work.work_id}`);
 
-  const job = await db.getJob(job_id);
+  const job = await db.getJob(ctx, job_id);
   if (!job) return null;
 
   const currentSummary = job.context_summary ?? "";
@@ -463,7 +465,7 @@ Keep it under 100 words. Focus on what future tasks need to know.`,
   const cost = calculateSummarizationCost(SUMMARIZATION_MODEL, usage);
 
   // Update in database
-  await db.updateContextSummary(job_id, newSummary);
+  await db.updateContextSummary(ctx, job_id, newSummary);
 
   logger.info(ctx, `operation=update_context_summary job_id=${job_id} work_id=${work.work_id} cost=${cost.toFixed(6)} duration_ms=${Date.now() - startTime}`);
 
@@ -505,7 +507,7 @@ export async function updateContextAfterWork(
 ): Promise<LLMOperation[]> {
   logger.debug(ctx, `operation=update_context_after_work job_id=${job_id} work_id=${work_id}`);
 
-  const work = await db.getWorkItem(work_id);
+  const work = await db.getWorkItem(ctx, work_id);
   if (!work || !work.output) return [];
 
   const operations: LLMOperation[] = [];
@@ -519,7 +521,7 @@ export async function updateContextAfterWork(
   operations.push(titleResult.operation);
 
   // Add to context refs
-  await db.addContextRef(job_id, {
+  await db.addContextRef(ctx, job_id, {
     work_id,
     action_item_id: work.action_item_id,
     title: titleResult.data.title,

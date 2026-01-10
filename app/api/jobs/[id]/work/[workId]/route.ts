@@ -39,7 +39,7 @@ export async function GET(
 
     // Get user
     const db = getDatabaseClient();
-    const user = await db.getUser(clerkId);
+    const user = await db.getUser(ctx, clerkId);
     if (!user) {
       logger.info(ctx, `operation=get_work_item work_id=${work_id} status=user_not_found`);
       return NextResponse.json(
@@ -49,7 +49,7 @@ export async function GET(
     }
 
     // Get job to verify ownership
-    const job = await db.getJob(job_id);
+    const job = await db.getJob(ctx, job_id);
     if (!job) {
       logger.info(ctx, `operation=get_work_item work_id=${work_id} job_id=${job_id} status=job_not_found`);
       return NextResponse.json(
@@ -68,7 +68,7 @@ export async function GET(
     }
 
     // Get work item
-    const workItem = await db.getWorkItem(work_id);
+    const workItem = await db.getWorkItem(ctx, work_id);
     if (!workItem) {
       logger.info(ctx, `operation=get_work_item work_id=${work_id} status=not_found`);
       return NextResponse.json(

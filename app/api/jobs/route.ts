@@ -43,7 +43,7 @@ export async function POST(
 
     // Get user
     const db = getDatabaseClient();
-    const user = await db.getUser(clerkId);
+    const user = await db.getUser(ctx, clerkId);
     if (!user) {
       logger.info(ctx, "operation=create_job status=user_not_found");
       return NextResponse.json(
@@ -157,7 +157,7 @@ export async function GET(): Promise<
 
     // Get user
     const db = getDatabaseClient();
-    const user = await db.getUser(clerkId);
+    const user = await db.getUser(ctx, clerkId);
     if (!user) {
       logger.info(ctx, "operation=list_jobs status=user_not_found");
       return NextResponse.json(

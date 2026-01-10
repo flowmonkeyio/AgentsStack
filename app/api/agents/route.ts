@@ -11,12 +11,13 @@ export async function GET(request: NextRequest) {
 
   try {
     const { searchParams } = new URL(request.url);
-    const status = searchParams.get("status") || "active";
-    const limit = parseInt(searchParams.get("limit") || "20", 10);
+    const status = searchParams.get("status"); // null means all
+    const limit = parseInt(searchParams.get("limit") || "50", 10);
 
     const agents = await getAgentsCollection();
+    const query = status ? { status } : {}; // Empty query = all agents
     const agentList = await agents
-      .find({ status })
+      .find(query)
       .sort({ "metrics.averageScore": -1 })
       .limit(limit)
       .toArray();

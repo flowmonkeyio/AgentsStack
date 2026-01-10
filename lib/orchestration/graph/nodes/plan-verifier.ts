@@ -137,6 +137,7 @@ Be strict. If ANY issue is found, result must be "FAIL".`;
  * Validate plan completeness - every deliverable must have action items
  */
 function validateCompleteness(
+  ctx: RequestContext,
   plan: PlanningAgentOutput,
   issues: string[],
   suggestions: string[]
@@ -147,6 +148,7 @@ function validateCompleteness(
     );
 
     if (actionItems.length === 0) {
+      logger.debug(ctx, `operation=validate_completeness error_type=no_action_items deliverable_id=${deliverable.id} deliverable_name=${deliverable.name}`);
       issues.push(`Deliverable "${deliverable.name}" has no action items`);
       suggestions.push(`Add action item(s) for deliverable ${deliverable.id}`);
     }
@@ -155,12 +157,15 @@ function validateCompleteness(
   // Every action item must have required fields
   for (const item of plan.action_items) {
     if (!item.item || item.item.trim() === "") {
+      logger.debug(ctx, `operation=validate_completeness error_type=empty_description action_item_id=${item.id}`);
       issues.push(`Action item ${item.id} has empty description`);
     }
     if (!item.agent_id && item.resource_type !== "SELF") {
+      logger.debug(ctx, `operation=validate_completeness error_type=missing_agent action_item_id=${item.id}`);
       issues.push(`Action item ${item.id} has no agent assigned`);
     }
     if (!item.template_id) {
+      logger.debug(ctx, `operation=validate_completeness error_type=missing_template action_item_id=${item.id}`);
       issues.push(`Action item ${item.id} has no template assigned`);
     }
   }
@@ -170,6 +175,7 @@ function validateCompleteness(
  * Validate dependencies - no circular deps, all deps exist
  */
 function validateDependencies(
+  ctx: RequestContext,
   plan: PlanningAgentOutput,
   issues: string[],
   suggestions: string[]
@@ -180,6 +186,7 @@ function validateDependencies(
     // Check all dependencies exist
     for (const depId of item.depends_on) {
       if (!itemIds.has(depId)) {
+        logger.debug(ctx, `operation=validate_dependencies error_type=missing_dependency action_item_id=${item.id} missing_dep_id=${depId}`);
         issues.push(
           `Action item ${item.id} depends on non-existent item ${depId}`
         );
@@ -191,6 +198,7 @@ function validateDependencies(
   // Check for circular dependencies
   const cycles = detectCycles(plan.action_items);
   if (cycles.length > 0) {
+    logger.debug(ctx, `operation=validate_dependencies error_type=circular_dependency items=${cycles.join(",")}`);
     issues.push(`Circular dependency detected: ${cycles.join(" -> ")}`);
     suggestions.push("Break the cycle by removing one dependency");
   }
@@ -200,6 +208,7 @@ function validateDependencies(
     for (const depId of item.depends_on) {
       const dep = plan.action_items.find((a) => a.id === depId);
       if (dep && dep.priority > item.priority) {
+        logger.debug(ctx, `operation=validate_dependencies error_type=priority_mismatch action_item_id=${item.id} action_item_priority=${item.priority} dep_id=${depId} dep_priority=${dep.priority}`);
         issues.push(
           `Item ${item.id} (priority ${item.priority}) depends on item ${depId} (priority ${dep.priority}) - dependency has lower priority`
         );
@@ -252,6 +261,7 @@ function detectCycles(items: ActionItem[]): number[] {
  * Validate agent picks - agents must exist, be active, and meet quality threshold
  */
 function validateAgentPicks(
+  ctx: RequestContext,
   plan: PlanningAgentOutput,
   availableAgents: Agent[],
   issues: string[],
@@ -264,6 +274,7 @@ function validateAgentPicks(
 
     // Agent must exist
     if (!item.agent_id || !agentIds.has(item.agent_id)) {
+      logger.debug(ctx, `operation=validate_agent_picks error_type=agent_not_found action_item_id=${item.id} agent_id=${item.agent_id ?? "null"}`);
       issues.push(`Agent "${item.agent_id}" does not exist in marketplace`);
       suggestions.push(`Choose from available agents or use SELF`);
       continue;
@@ -274,12 +285,14 @@ function validateAgentPicks(
 
     // Agent must be active (if status field exists - checking url as proxy)
     if (!agent.url) {
+      logger.debug(ctx, `operation=validate_agent_picks error_type=agent_inactive action_item_id=${item.id} agent_id=${item.agent_id}`);
       issues.push(`Agent "${item.agent_id}" appears inactive`);
       suggestions.push(`Choose an active agent`);
     }
 
     // Agent quality must meet threshold
     if (agent.stats.avg_score < MIN_AGENT_QUALITY) {
+      logger.debug(ctx, `operation=validate_agent_picks error_type=low_quality action_item_id=${item.id} agent_id=${item.agent_id} quality=${agent.stats.avg_score} min_quality=${MIN_AGENT_QUALITY}`);
       issues.push(
         `Agent "${item.agent_id}" has low quality score (${agent.stats.avg_score}) - minimum ${MIN_AGENT_QUALITY} required`
       );
@@ -291,6 +304,7 @@ function validateAgentPicks(
  * Validate template picks - templates must exist
  */
 function validateTemplatePicks(
+  ctx: RequestContext,
   plan: PlanningAgentOutput,
   availableTemplates: PromptTemplate[],
   issues: string[],
@@ -300,6 +314,7 @@ function validateTemplatePicks(
 
   for (const item of plan.action_items) {
     if (!item.template_id || !templateIds.has(item.template_id)) {
+      logger.debug(ctx, `operation=validate_template_picks error_type=template_not_found action_item_id=${item.id} template_id=${item.template_id ?? "null"}`);
       issues.push(`Template "${item.template_id}" does not exist`);
       suggestions.push(`Choose from available templates`);
     }
@@ -310,6 +325,7 @@ function validateTemplatePicks(
  * Validate budget - total cost must not exceed budget
  */
 function validateBudget(
+  ctx: RequestContext,
   plan: PlanningAgentOutput,
   budget: number,
   issues: string[],
@@ -320,6 +336,7 @@ function validateBudget(
     .reduce((sum, a) => sum + a.estimated_cost, 0);
 
   if (totalCost > budget) {
+    logger.debug(ctx, `operation=validate_budget error_type=budget_exceeded total_cost=${totalCost.toFixed(2)} budget=${budget.toFixed(2)}`);
     issues.push(
       `Total estimated cost ($${totalCost.toFixed(2)}) exceeds budget ($${budget.toFixed(2)})`
     );
@@ -338,15 +355,15 @@ function validateBudget(
 /**
  * Run all validations on a plan
  */
-function verifyPlan(input: PlanVerifierInput): PlanVerification {
+function verifyPlan(ctx: RequestContext, input: PlanVerifierInput): PlanVerification {
   const issues: string[] = [];
   const suggestions: string[] = [];
 
-  validateCompleteness(input.plan, issues, suggestions);
-  validateDependencies(input.plan, issues, suggestions);
-  validateAgentPicks(input.plan, input.available_agents, issues, suggestions);
-  validateTemplatePicks(input.plan, input.available_templates, issues, suggestions);
-  validateBudget(input.plan, input.budget, issues, suggestions);
+  validateCompleteness(ctx, input.plan, issues, suggestions);
+  validateDependencies(ctx, input.plan, issues, suggestions);
+  validateAgentPicks(ctx, input.plan, input.available_agents, issues, suggestions);
+  validateTemplatePicks(ctx, input.plan, input.available_templates, issues, suggestions);
+  validateBudget(ctx, input.plan, input.budget, issues, suggestions);
 
   return {
     result: issues.length === 0 ? "PASS" : "FAIL",
@@ -479,7 +496,7 @@ async function planVerifierNodeImpl(ctx: RequestContext, state: OrchestrationSta
   };
 
   // Run code-based validation (fast, no LLM cost)
-  const verification = verifyPlan(verifierInput);
+  const verification = verifyPlan(ctx, verifierInput);
 
   // Build verification output
   const planVerification: PlanVerifierOutput = {

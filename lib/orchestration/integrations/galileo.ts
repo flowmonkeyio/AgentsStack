@@ -111,7 +111,7 @@ export async function verifyWork(
   logger.debug(ctx, `operation=verify_work_start work_id=${work_id}`);
 
   // Fetch work item
-  const work = await db.getWorkItem(work_id);
+  const work = await db.getWorkItem(ctx, work_id);
   if (!work) {
     logger.error(ctx, `operation=verify_work work_id=${work_id} error=work_not_found`);
     throw new IntegrationError(

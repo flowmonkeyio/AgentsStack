@@ -2,11 +2,12 @@
 
 import { useState, useEffect } from "react";
 import { useParams } from "next/navigation";
+import Link from "next/link";
 import { useAuth } from "@clerk/nextjs";
 import { useJobStream } from "@/hooks/useJobStream";
 import { api, APIClientError } from "@/lib/api-client";
 
-// Components - imported from job components (being implemented by another agent)
+// Components
 import { JobStatusBadge } from "@/components/job/JobStatusBadge";
 import { WorkItemList } from "@/components/job/WorkItemList";
 import { ReasoningLog } from "@/components/job/ReasoningLog";
@@ -31,12 +32,10 @@ export default function JobDetailPage() {
   const job_id = params.job_id as string;
   const { isLoaded, isSignedIn } = useAuth();
 
-  // Initial job data fetch
   const [initialJob, setInitialJob] = useState<GetJobResponse | null>(null);
   const [initialLoading, setInitialLoading] = useState(true);
   const [initialError, setInitialError] = useState<string | null>(null);
 
-  // Real-time updates via SSE
   const {
     jobState,
     workItems,
@@ -46,10 +45,8 @@ export default function JobDetailPage() {
     reconnect,
   } = useJobStream(job_id);
 
-  // Continuation state
   const [isContinuing, setIsContinuing] = useState(false);
 
-  // Fetch initial job data
   useEffect(() => {
     async function fetchJob() {
       if (!isLoaded || !isSignedIn) return;
@@ -79,12 +76,10 @@ export default function JobDetailPage() {
     fetchJob();
   }, [job_id, isLoaded, isSignedIn]);
 
-  // Handle continuation submission
   const handleContinue = async (prompt: string) => {
     setIsContinuing(true);
     try {
       await api.continueJob(job_id, prompt);
-      // The SSE stream will handle the updates
     } catch (err) {
       if (err instanceof APIClientError) {
         console.error("Failed to continue job:", err.message);
@@ -94,10 +89,8 @@ export default function JobDetailPage() {
     }
   };
 
-  // Derive current status from SSE state or initial data
   const currentStatus = jobState?.status ?? initialJob?.status;
 
-  // Merge work items from initial load and SSE updates
   const displayWorkItems = workItems.length > 0 ? workItems : (initialJob?.work_items ?? []).map(item => ({
     work_id: item.work_id,
     action_item_id: item.action_item_id,
@@ -111,7 +104,6 @@ export default function JobDetailPage() {
     verification: item.verification,
   }));
 
-  // Get reasoning log from SSE or initial data
   const displayReasoningLog = reasoningLog.length > 0
     ? reasoningLog
     : (initialJob?.reasoning_log ?? []).map(entry => ({
@@ -122,18 +114,20 @@ export default function JobDetailPage() {
         decision: entry.decision,
       }));
 
-  // Extract payments from work items (placeholder - actual implementation would come from API)
   const payments: Payment[] = [];
 
   // Auth loading state
   if (!isLoaded) {
     return (
-      <div className="container mx-auto px-4 py-8">
-        <div className="animate-pulse">
-          <div className="h-8 bg-muted rounded w-1/3 mb-6"></div>
-          <div className="h-4 bg-muted rounded w-1/4 mb-8"></div>
-          <div className="h-48 bg-muted rounded mb-6"></div>
-          <div className="h-32 bg-muted rounded"></div>
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
+        <div className="animate-pulse space-y-6">
+          <div className="h-8 bg-background-card rounded-lg w-1/3" />
+          <div className="h-4 bg-background-card rounded-lg w-2/3" />
+          <div className="h-32 bg-background-card rounded-xl" />
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <div className="lg:col-span-2 h-64 bg-background-card rounded-xl" />
+            <div className="h-64 bg-background-card rounded-xl" />
+          </div>
         </div>
       </div>
     );
@@ -142,12 +136,20 @@ export default function JobDetailPage() {
   // Not signed in
   if (!isSignedIn) {
     return (
-      <div className="container mx-auto px-4 py-8">
-        <div className="text-center">
-          <h1 className="text-3xl font-bold mb-4">Sign In Required</h1>
-          <p className="text-muted-foreground">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-20">
+        <div className="max-w-md mx-auto text-center">
+          <div className="w-16 h-16 rounded-2xl bg-primary-muted flex items-center justify-center mx-auto mb-6">
+            <svg className="w-8 h-8 text-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z" />
+            </svg>
+          </div>
+          <h1 className="font-heading text-2xl font-bold text-foreground mb-3">Sign In Required</h1>
+          <p className="text-foreground-muted mb-8">
             Please sign in to view job details.
           </p>
+          <Link href="/sign-in" className="btn-primary">
+            Sign In
+          </Link>
         </div>
       </div>
     );
@@ -156,16 +158,26 @@ export default function JobDetailPage() {
   // Initial loading state
   if (initialLoading) {
     return (
-      <div className="container mx-auto px-4 py-8">
-        <div className="animate-pulse">
-          <div className="flex justify-between items-center mb-6">
-            <div className="h-8 bg-muted rounded w-1/3"></div>
-            <div className="h-6 bg-muted rounded w-20"></div>
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
+        <div className="animate-pulse space-y-6">
+          <div className="flex justify-between items-center">
+            <div className="space-y-2">
+              <div className="h-8 bg-background-card rounded-lg w-48" />
+              <div className="h-4 bg-background-card rounded-lg w-96" />
+            </div>
+            <div className="h-8 bg-background-card rounded-full w-24" />
           </div>
-          <div className="h-16 bg-muted rounded mb-6"></div>
+          <div className="h-28 bg-background-card rounded-xl" />
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <div className="lg:col-span-2 h-64 bg-muted rounded"></div>
-            <div className="h-64 bg-muted rounded"></div>
+            <div className="lg:col-span-2 space-y-4">
+              <div className="h-6 bg-background-card rounded w-32" />
+              <div className="h-32 bg-background-card rounded-xl" />
+              <div className="h-32 bg-background-card rounded-xl" />
+            </div>
+            <div className="space-y-4">
+              <div className="h-6 bg-background-card rounded w-24" />
+              <div className="h-64 bg-background-card rounded-xl" />
+            </div>
           </div>
         </div>
       </div>
@@ -175,13 +187,18 @@ export default function JobDetailPage() {
   // Error state
   if (initialError) {
     return (
-      <div className="container mx-auto px-4 py-8">
-        <div className="max-w-2xl mx-auto text-center">
-          <h1 className="text-3xl font-bold mb-4">Error</h1>
-          <p className="text-destructive mb-6">{initialError}</p>
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-20">
+        <div className="max-w-md mx-auto text-center">
+          <div className="w-16 h-16 rounded-2xl bg-destructive-muted flex items-center justify-center mx-auto mb-6">
+            <svg className="w-8 h-8 text-destructive" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
+            </svg>
+          </div>
+          <h1 className="font-heading text-2xl font-bold text-foreground mb-3">Error</h1>
+          <p className="text-destructive mb-8">{initialError}</p>
           <button
             onClick={() => window.location.reload()}
-            className="inline-flex items-center justify-center rounded-md bg-primary px-6 py-3 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
+            className="btn-primary"
           >
             Try Again
           </button>
@@ -190,85 +207,144 @@ export default function JobDetailPage() {
     );
   }
 
-  // No job found (shouldn't happen if error handling is correct)
+  // No job found
   if (!initialJob) {
     return (
-      <div className="container mx-auto px-4 py-8">
-        <div className="text-center">
-          <h1 className="text-3xl font-bold mb-4">Job Not Found</h1>
-          <p className="text-muted-foreground">
-            The job you're looking for doesn't exist or has been deleted.
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-20">
+        <div className="max-w-md mx-auto text-center">
+          <div className="w-16 h-16 rounded-2xl bg-warning-muted flex items-center justify-center mx-auto mb-6">
+            <svg className="w-8 h-8 text-warning" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9.879 7.519c1.171-1.025 3.071-1.025 4.242 0 1.172 1.025 1.172 2.687 0 3.712-.203.179-.43.326-.67.442-.745.361-1.45.999-1.45 1.827v.75M21 12a9 9 0 11-18 0 9 9 0 0118 0zm-9 5.25h.008v.008H12v-.008z" />
+            </svg>
+          </div>
+          <h1 className="font-heading text-2xl font-bold text-foreground mb-3">Job Not Found</h1>
+          <p className="text-foreground-muted mb-8">
+            The job you&apos;re looking for doesn&apos;t exist or has been deleted.
           </p>
+          <Link href="/" className="btn-primary">
+            Back to Dashboard
+          </Link>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="container mx-auto px-4 py-8">
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
+      {/* Breadcrumb */}
+      <nav className="flex items-center gap-2 text-sm text-foreground-muted mb-8">
+        <Link href="/" className="hover:text-primary transition-colors">Dashboard</Link>
+        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+        </svg>
+        <span className="text-foreground font-medium truncate max-w-[200px]">Job {job_id.slice(0, 8)}...</span>
+      </nav>
+
       {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4 mb-6">
-        <div>
-          <h1 className="text-2xl font-bold truncate">Job: {job_id}</h1>
-          <p className="text-sm text-muted-foreground mt-1 line-clamp-2">
+      <div className="flex flex-col sm:flex-row sm:justify-between sm:items-start gap-4 mb-8">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-3 mb-2">
+            <h1 className="font-heading text-2xl sm:text-3xl font-bold text-foreground truncate">
+              Job Details
+            </h1>
+            <JobStatusBadge status={currentStatus ?? "planning"} size="lg" />
+          </div>
+          <p className="text-foreground-muted line-clamp-2 max-w-2xl">
             {initialJob.prompt}
           </p>
         </div>
-        <JobStatusBadge status={currentStatus ?? "planning"} />
       </div>
 
-      {/* Connection indicator with reconnection status */}
+      {/* Connection indicator */}
       {!connectionState.isConnected && (
-        <div className="mb-4 p-4 rounded-md bg-yellow-500/10 border border-yellow-500/20 text-yellow-700 dark:text-yellow-400">
-          <div className="flex items-center justify-between flex-wrap gap-2">
-            <span>
-              {streamError?.message || "Connecting to live updates..."}
+        <div className="mb-6 p-4 rounded-xl bg-warning-muted border border-warning/20 flex items-center justify-between flex-wrap gap-3">
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-lg bg-warning/20 flex items-center justify-center">
+              <svg className="w-4 h-4 text-warning" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+              </svg>
+            </div>
+            <div>
+              <p className="text-sm font-medium text-warning">
+                {streamError?.message || "Connecting to live updates..."}
+              </p>
               {connectionState.attemptCount > 0 && (
-                <span className="ml-2 text-sm opacity-80">
-                  (Attempt {connectionState.attemptCount})
-                </span>
+                <p className="text-xs text-warning/80">
+                  Attempt {connectionState.attemptCount}
+                </p>
               )}
-            </span>
-            {connectionState.attemptCount >= 10 && (
-              <button
-                onClick={reconnect}
-                className="px-3 py-1 bg-yellow-600 text-white rounded text-sm hover:bg-yellow-700 transition-colors"
-              >
-                Retry
-              </button>
-            )}
+            </div>
           </div>
+          {connectionState.attemptCount >= 10 && (
+            <button
+              onClick={reconnect}
+              className="px-4 py-2 bg-warning text-warning-foreground rounded-lg text-sm font-medium hover:bg-warning/90 transition-colors"
+            >
+              Retry Connection
+            </button>
+          )}
         </div>
       )}
 
       {/* Budget display */}
-      <div className="mb-6">
+      <div className="mb-8">
         <BudgetDisplay budget={initialJob.budget} />
       </div>
 
-      {/* Main content grid - responsive layout */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 md:gap-6 mt-6">
-        {/* Work items: full width on mobile, 2 cols on tablet, 2 cols on desktop */}
-        <div className="col-span-1 md:col-span-2 lg:col-span-2">
-          <h2 className="text-xl font-semibold mb-4">Work Items</h2>
+      {/* Main content grid */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Work items */}
+        <div className="lg:col-span-2 space-y-4">
+          <div className="flex items-center gap-2">
+            <div className="w-8 h-8 rounded-lg bg-info-muted flex items-center justify-center">
+              <svg className="w-4 h-4 text-info" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
+              </svg>
+            </div>
+            <h2 className="font-heading text-xl font-semibold text-foreground">Work Items</h2>
+            {displayWorkItems.length > 0 && (
+              <span className="text-sm text-foreground-muted">({displayWorkItems.length})</span>
+            )}
+          </div>
+
           {displayWorkItems.length > 0 ? (
             <WorkItemList workItems={displayWorkItems} />
           ) : (
-            <div className="rounded-md border border-border p-8 text-center text-muted-foreground">
-              {currentStatus === "planning" ? (
-                "Planning in progress..."
-              ) : currentStatus === "plan_verification" ? (
-                "Verifying plan..."
-              ) : (
-                "No work items yet."
-              )}
+            <div className="rounded-xl bg-background-card border border-border p-8 text-center">
+              <div className="w-12 h-12 rounded-xl bg-info-muted flex items-center justify-center mx-auto mb-3">
+                {currentStatus === "planning" || currentStatus === "plan_verification" ? (
+                  <svg className="w-6 h-6 text-info animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                  </svg>
+                ) : (
+                  <svg className="w-6 h-6 text-info" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+                  </svg>
+                )}
+              </div>
+              <p className="text-foreground-muted">
+                {currentStatus === "planning" ? (
+                  "Planning in progress..."
+                ) : currentStatus === "plan_verification" ? (
+                  "Verifying plan..."
+                ) : (
+                  "No work items yet."
+                )}
+              </p>
             </div>
           )}
         </div>
 
-        {/* Reasoning log: full width on mobile, 2 cols on tablet, 1 col on desktop */}
-        <div className="col-span-1 md:col-span-2 lg:col-span-1">
-          <h2 className="text-xl font-semibold mb-4">Reasoning</h2>
+        {/* Reasoning log */}
+        <div className="space-y-4">
+          <div className="flex items-center gap-2">
+            <div className="w-8 h-8 rounded-lg bg-secondary-muted flex items-center justify-center">
+              <svg className="w-4 h-4 text-secondary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+              </svg>
+            </div>
+            <h2 className="font-heading text-xl font-semibold text-foreground">Reasoning</h2>
+          </div>
           <ReasoningLog entries={displayReasoningLog} />
         </div>
       </div>
@@ -285,13 +361,26 @@ export default function JobDetailPage() {
       )}
 
       {/* Payment trail */}
-      <div className="mt-8">
-        <h2 className="text-xl font-semibold mb-4">Payments</h2>
+      <div className="mt-8 space-y-4">
+        <div className="flex items-center gap-2">
+          <div className="w-8 h-8 rounded-lg bg-accent-muted flex items-center justify-center">
+            <svg className="w-4 h-4 text-accent" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M2.25 18.75a60.07 60.07 0 0115.797 2.101c.727.198 1.453-.342 1.453-1.096V18.75M3.75 4.5v.75A.75.75 0 013 6h-.75m0 0v-.375c0-.621.504-1.125 1.125-1.125H20.25M2.25 6v9m18-10.5v.75c0 .414.336.75.75.75h.75m-1.5-1.5h.375c.621 0 1.125.504 1.125 1.125v9.75c0 .621-.504 1.125-1.125 1.125h-.375m1.5-1.5H21a.75.75 0 00-.75.75v.75m0 0H3.75m0 0h-.375a1.125 1.125 0 01-1.125-1.125V15m1.5 1.5v-.75A.75.75 0 003 15h-.75M15 10.5a3 3 0 11-6 0 3 3 0 016 0zm3 0h.008v.008H18V10.5zm-12 0h.008v.008H6V10.5z" />
+            </svg>
+          </div>
+          <h2 className="font-heading text-xl font-semibold text-foreground">Payments</h2>
+        </div>
+
         {payments.length > 0 ? (
           <PaymentTrail payments={payments} />
         ) : (
-          <div className="rounded-md border border-border p-6 text-center text-muted-foreground">
-            No payments processed yet.
+          <div className="rounded-xl bg-background-card border border-border p-8 text-center">
+            <div className="w-12 h-12 rounded-xl bg-accent-muted flex items-center justify-center mx-auto mb-3">
+              <svg className="w-6 h-6 text-accent" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M2.25 18.75a60.07 60.07 0 0115.797 2.101c.727.198 1.453-.342 1.453-1.096V18.75M3.75 4.5v.75A.75.75 0 013 6h-.75m0 0v-.375c0-.621.504-1.125 1.125-1.125H20.25M2.25 6v9m18-10.5v.75c0 .414.336.75.75.75h.75m-1.5-1.5h.375c.621 0 1.125.504 1.125 1.125v9.75c0 .621-.504 1.125-1.125 1.125h-.375m1.5-1.5H21a.75.75 0 00-.75.75v.75m0 0H3.75m0 0h-.375a1.125 1.125 0 01-1.125-1.125V15m1.5 1.5v-.75A.75.75 0 003 15h-.75M15 10.5a3 3 0 11-6 0 3 3 0 016 0zm3 0h.008v.008H18V10.5zm-12 0h.008v.008H6V10.5z" />
+              </svg>
+            </div>
+            <p className="text-foreground-muted">No payments processed yet.</p>
           </div>
         )}
       </div>

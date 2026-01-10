@@ -50,7 +50,7 @@ export async function GET(
 
   // Get user
   const db = getDatabaseClient();
-  const user = await db.getUser(clerkId);
+  const user = await db.getUser(ctx, clerkId);
   if (!user) {
     logger.info(ctx, `operation=sse_connect job_id=${job_id} status=user_not_found`);
     return new Response(
@@ -82,7 +82,7 @@ export async function GET(
   }
 
   // Get job
-  const job = await db.getJob(job_id);
+  const job = await db.getJob(ctx, job_id);
   if (!job) {
     logger.info(ctx, `operation=sse_connect job_id=${job_id} status=not_found`);
     return new Response(

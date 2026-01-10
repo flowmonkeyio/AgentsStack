@@ -78,7 +78,7 @@ export async function payForWork(
   logger.debug(ctx, `operation=pay_for_work_start work_id=${work_id}`);
 
   // Fetch work item
-  const work = await db.getWorkItem(work_id);
+  const work = await db.getWorkItem(ctx, work_id);
   if (!work) {
     logger.error(ctx, `operation=pay_for_work work_id=${work_id} error=work_not_found`);
     throw new IntegrationError(
@@ -101,7 +101,7 @@ export async function payForWork(
   }
 
   // Fetch job for user info
-  const job = await db.getJob(work.job_id);
+  const job = await db.getJob(ctx, work.job_id);
   if (!job) {
     logger.error(ctx, `operation=pay_for_work work_id=${work_id} error=job_not_found job_id=${work.job_id}`);
     throw new IntegrationError(
@@ -123,7 +123,7 @@ export async function payForWork(
     );
   }
 
-  const agent = await db.getAgent(work.agent.agent_id);
+  const agent = await db.getAgent(ctx, work.agent.agent_id);
   if (!agent) {
     logger.error(ctx, `operation=pay_for_work work_id=${work_id} error=agent_not_found agent_id=${work.agent.agent_id}`);
     throw new IntegrationError(
@@ -221,7 +221,7 @@ export async function retryPayment(
   logger.debug(ctx, `operation=retry_payment_start work_id=${work_id}`);
 
   // Fetch work item to get retry count
-  const work = await db.getWorkItem(work_id);
+  const work = await db.getWorkItem(ctx, work_id);
   if (!work) {
     logger.error(ctx, `operation=retry_payment work_id=${work_id} error=work_not_found`);
     throw new IntegrationError(
@@ -274,7 +274,7 @@ export async function checkPaymentStatus(
 
   logger.debug(ctx, `operation=check_payment_status work_id=${work_id}`);
 
-  const work = await db.getWorkItem(work_id);
+  const work = await db.getWorkItem(ctx, work_id);
   if (!work) {
     logger.error(ctx, `operation=check_payment_status work_id=${work_id} error=work_not_found`);
     throw new IntegrationError(

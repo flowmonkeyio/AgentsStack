@@ -331,7 +331,7 @@ export async function createContinuationWorkItem(
   }
 
   // Build work item using DatabaseClient
-  const workItem = await db.createWorkItem({
+  const workItem = await db.createWorkItem(ctx, {
     work_id,
     job_id,
     plan_id,
@@ -414,14 +414,14 @@ export async function checkDependencyCascade(
   logger.info(ctx, `operation=check_dependency_cascade_start job_id=${job_id} plan_id=${plan_id} modified_work_id=${modified_work_id}`);
 
   // Use DatabaseClient to get modified work item
-  const modifiedWork = await db.getWorkItem(modified_work_id);
+  const modifiedWork = await db.getWorkItem(ctx, modified_work_id);
   if (!modifiedWork) {
     logger.error(ctx, `operation=check_dependency_cascade modified_work_id=${modified_work_id} error=work_item_not_found`);
     throw new Error(`Work item not found: ${modified_work_id}`);
   }
 
   // Use DatabaseClient to get plan
-  const plan = await db.getPlan(plan_id);
+  const plan = await db.getPlan(ctx, plan_id);
   if (!plan) {
     logger.error(ctx, `operation=check_dependency_cascade plan_id=${plan_id} error=plan_not_found`);
     throw new Error(`Plan not found: ${plan_id}`);

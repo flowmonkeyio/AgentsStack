@@ -15,6 +15,7 @@ export type JobStatus =
  */
 export interface JobStatusBadgeProps {
   status: JobStatus;
+  size?: "sm" | "md" | "lg";
 }
 
 /**
@@ -22,126 +23,95 @@ export interface JobStatusBadgeProps {
  */
 interface StatusConfig {
   label: string;
-  bgColor: string;
-  textColor: string;
+  className: string;
+  icon: React.ReactNode;
   pulsing: boolean;
 }
 
 /**
  * Visual mapping for each status
- * - planning: yellow, pulsing
- * - plan_verification: yellow
- * - executing: blue, pulsing
- * - completed: green
- * - failed: red
  */
 const STATUS_CONFIG: Record<JobStatus, StatusConfig> = {
   planning: {
     label: "Planning",
-    bgColor: "bg-yellow-100 dark:bg-yellow-900/30",
-    textColor: "text-yellow-800 dark:text-yellow-200",
+    className: "badge-warning",
     pulsing: true,
+    icon: (
+      <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+      </svg>
+    ),
   },
   plan_verification: {
     label: "Verifying Plan",
-    bgColor: "bg-yellow-100 dark:bg-yellow-900/30",
-    textColor: "text-yellow-800 dark:text-yellow-200",
+    className: "badge-warning",
     pulsing: false,
+    icon: (
+      <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+      </svg>
+    ),
   },
   executing: {
     label: "Executing",
-    bgColor: "bg-blue-100 dark:bg-blue-900/30",
-    textColor: "text-blue-800 dark:text-blue-200",
+    className: "badge-info",
     pulsing: true,
+    icon: (
+      <svg className="w-3.5 h-3.5 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+      </svg>
+    ),
   },
   completed: {
     label: "Completed",
-    bgColor: "bg-green-100 dark:bg-green-900/30",
-    textColor: "text-green-800 dark:text-green-200",
+    className: "badge-success",
     pulsing: false,
+    icon: (
+      <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+      </svg>
+    ),
   },
   failed: {
     label: "Failed",
-    bgColor: "bg-red-100 dark:bg-red-900/30",
-    textColor: "text-red-800 dark:text-red-200",
+    className: "badge-error",
     pulsing: false,
+    icon: (
+      <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+      </svg>
+    ),
   },
 };
 
 /**
  * JobStatusBadge - Display current job status with color coding
- *
- * Features:
- * - Color-coded badges for each status
- * - Pulsing animation for active states (planning, executing)
- * - Accessible with proper ARIA attributes
  */
-export function JobStatusBadge({ status }: JobStatusBadgeProps) {
+export function JobStatusBadge({ status, size = "md" }: JobStatusBadgeProps) {
   const config = STATUS_CONFIG[status];
+
+  const sizeClasses = {
+    sm: "text-xs px-2 py-0.5 gap-1",
+    md: "text-xs px-3 py-1 gap-1.5",
+    lg: "text-sm px-4 py-1.5 gap-2",
+  };
 
   return (
     <span
-      className={`
-        inline-flex items-center gap-1.5
-        px-2.5 py-1
-        text-xs sm:text-sm font-medium
-        rounded-full
-        ${config.bgColor}
-        ${config.textColor}
-      `}
+      className={`badge ${config.className} ${sizeClasses[size]}`}
       role="status"
       aria-live="polite"
     >
       {/* Pulsing dot indicator for active states */}
       {config.pulsing && (
         <span className="relative flex h-2 w-2">
-          <span
-            className={`
-              animate-ping absolute inline-flex h-full w-full rounded-full opacity-75
-              ${status === "planning" ? "bg-yellow-500" : "bg-blue-500"}
-            `}
-          />
-          <span
-            className={`
-              relative inline-flex rounded-full h-2 w-2
-              ${status === "planning" ? "bg-yellow-500" : "bg-blue-500"}
-            `}
-          />
+          <span className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 bg-current" />
+          <span className="relative inline-flex rounded-full h-2 w-2 bg-current" />
         </span>
       )}
 
-      {/* Status indicator icons for non-pulsing states */}
-      {!config.pulsing && status === "completed" && (
-        <svg
-          className="w-3.5 h-3.5"
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
-        >
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth={2}
-            d="M5 13l4 4L19 7"
-          />
-        </svg>
-      )}
-
-      {!config.pulsing && status === "failed" && (
-        <svg
-          className="w-3.5 h-3.5"
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
-        >
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth={2}
-            d="M6 18L18 6M6 6l12 12"
-          />
-        </svg>
-      )}
+      {/* Status icon for non-pulsing states */}
+      {!config.pulsing && config.icon}
 
       {config.label}
     </span>

@@ -104,7 +104,7 @@ export async function dispatchToAgent(
   logger.debug(ctx, `operation=dispatch_start work_id=${work_id}`);
 
   // Fetch work item
-  const work = await db.getWorkItem(work_id);
+  const work = await db.getWorkItem(ctx, work_id);
   if (!work) {
     logger.error(ctx, `operation=dispatch work_id=${work_id} error=work_not_found`);
     throw new IntegrationError(
@@ -215,7 +215,7 @@ export async function dispatchToAgent(
     });
 
     // Update polling configuration
-    await db.updateWorkItemFields(work_id, {
+    await db.updateWorkItemFields(ctx, work_id, {
       external_ref: {
         reference_id: response.reference_id,
         status_url: response.status_url,
@@ -275,7 +275,7 @@ export async function pollAgent(
   logger.debug(ctx, `operation=poll_agent_start work_id=${work_id}`);
 
   // Fetch work item
-  const work = await db.getWorkItem(work_id);
+  const work = await db.getWorkItem(ctx, work_id);
   if (!work) {
     logger.error(ctx, `operation=poll_agent work_id=${work_id} error=work_not_found`);
     return { status: "failed", error: "Work item not found" };
@@ -302,7 +302,7 @@ export async function pollAgent(
     const message = error instanceof Error ? error.message : "Unknown error";
     logger.warn(ctx, `operation=poll_agent work_id=${work_id} status=poll_error error=${message}`);
     // Update last error but don't fail yet - could be transient
-    await db.updateWorkItemFields(work_id, {
+    await db.updateWorkItemFields(ctx, work_id, {
       external_ref: {
         ...work.external_ref,
         last_poll_at: new Date(),
@@ -342,7 +342,7 @@ export async function pollAgent(
   if (isStatusFailed(response)) {
     logger.warn(ctx, `operation=poll_agent work_id=${work_id} status=failed error=${response.error}`);
 
-    await db.updateWorkItemFields(work_id, {
+    await db.updateWorkItemFields(ctx, work_id, {
       external_ref: {
         ...work.external_ref,
         last_poll_at: new Date(),
@@ -357,7 +357,7 @@ export async function pollAgent(
 
   // Still pending - update next poll time
   logger.debug(ctx, `operation=poll_agent work_id=${work_id} status=pending progress=${response.progress ?? 0}`);
-  await updateNextPollTime(work_id, work, deps.db);
+  await updateNextPollTime(ctx, work_id, work, deps.db);
   return { status: "pending", progress: response.progress };
 }
 
@@ -391,11 +391,13 @@ export function calculateNextPollInterval(work: WorkItem): number {
 /**
  * Update the next poll time for a work item.
  *
+ * @param ctx - Request context for tracing
  * @param work_id - Work item ID
  * @param work - Current work item
  * @param db - Database client
  */
 async function updateNextPollTime(
+  ctx: RequestContext,
   work_id: string,
   work: WorkItem,
   db: ExtendedDatabaseClient
@@ -404,7 +406,7 @@ async function updateNextPollTime(
 
   const nextInterval = calculateNextPollInterval(work);
 
-  await db.updateWorkItemFields(work_id, {
+  await db.updateWorkItemFields(ctx, work_id, {
     external_ref: {
       ...work.external_ref,
       last_poll_at: new Date(),
@@ -445,7 +447,7 @@ export async function handleAgentCallback(
   logger.debug(ctx, `operation=webhook_received work_id=${work_id} status=${body.status}`);
 
   // Fetch work item
-  const work = await db.getWorkItem(work_id);
+  const work = await db.getWorkItem(ctx, work_id);
   if (!work) {
     logger.error(ctx, `operation=webhook_received work_id=${work_id} error=work_not_found`);
     throw new IntegrationError(
@@ -467,7 +469,7 @@ export async function handleAgentCallback(
     );
   }
 
-  const agent = await db.getAgent(work.agent.agent_id);
+  const agent = await db.getAgent(ctx, work.agent.agent_id);
 
   // Verify signature
   const isProduction = process.env.NODE_ENV === "production";
@@ -531,7 +533,7 @@ export async function handleAgentCallback(
   if (body.status === "failed") {
     logger.warn(ctx, `operation=webhook_failed work_id=${work_id} error=${body.error ?? "Unknown error"}`);
 
-    await db.updateWorkItemFields(work_id, {
+    await db.updateWorkItemFields(ctx, work_id, {
       external_ref: work.external_ref
         ? {
             ...work.external_ref,
@@ -551,7 +553,7 @@ export async function handleAgentCallback(
   if (body.status === "progress" && work.external_ref) {
     logger.debug(ctx, `operation=webhook_progress work_id=${work_id} progress=${body.progress ?? 0}`);
 
-    await db.updateWorkItemFields(work_id, {
+    await db.updateWorkItemFields(ctx, work_id, {
       external_ref: {
         ...work.external_ref,
         last_response: { progress: body.progress },
@@ -583,7 +585,7 @@ async function storeExternalAgentUsage(
 
   logger.debug(ctx, `operation=store_usage work_id=${work_id} total_cost=${usage.total_cost}`);
 
-  const work = await db.getWorkItem(work_id);
+  const work = await db.getWorkItem(ctx, work_id);
   if (!work) return;
 
   const job_id = work.job_id;

@@ -102,7 +102,7 @@ export class WorkLifecycle implements IWorkLifecycle {
     payload?: PayloadFor<T>
   ): Promise<TransitionResult> {
     // Use DatabaseClient to fetch work item
-    const work = await this.db.getWorkItem(work_id);
+    const work = await this.db.getWorkItem(ctx, work_id);
     if (!work) {
       logger.warn(ctx, `operation=transition work_id=${work_id} error=work_item_not_found`);
       return { success: false, error: "Work item not found" };
@@ -136,7 +136,7 @@ export class WorkLifecycle implements IWorkLifecycle {
 
     // Use DatabaseClient method to update work item
     // The updateWorkItemFields method performs a partial update
-    await this.db.updateWorkItemFields(work_id, {
+    await this.db.updateWorkItemFields(ctx, work_id, {
       status: transition.to,
       ...updates,
     });
@@ -168,7 +168,7 @@ export class WorkLifecycle implements IWorkLifecycle {
    * @param job_id - The job ID
    */
   async getActionable(ctx: RequestContext, job_id: string): Promise<WorkItem[]> {
-    const allWorkItems = await this.db.getWorkItemsByJob(job_id);
+    const allWorkItems = await this.db.getWorkItemsByJob(ctx, job_id);
     const actionable = allWorkItems.filter((work) => work.status === "ready");
     logger.info(ctx, `operation=get_actionable job_id=${job_id} total_count=${allWorkItems.length} actionable_count=${actionable.length}`);
     return actionable;
@@ -182,7 +182,7 @@ export class WorkLifecycle implements IWorkLifecycle {
    * @param type - The type of retry to check
    */
   async canRetry(ctx: RequestContext, work_id: string, type: RetryType): Promise<boolean> {
-    const work = await this.db.getWorkItem(work_id);
+    const work = await this.db.getWorkItem(ctx, work_id);
     if (!work) {
       logger.warn(ctx, `operation=can_retry work_id=${work_id} type=${type} error=work_item_not_found`);
       return false;
@@ -203,7 +203,7 @@ export class WorkLifecycle implements IWorkLifecycle {
     logger.info(ctx, `operation=spawn_todos_start plan_id=${request.plan_id} parent_todo_id=${request.parent_todo_id} new_todo_count=${request.new_todos.length}`);
 
     // Use DatabaseClient to get plan
-    const plan = await this.db.getPlan(request.plan_id);
+    const plan = await this.db.getPlan(ctx, request.plan_id);
     if (!plan) {
       logger.error(ctx, `operation=spawn_todos plan_id=${request.plan_id} error=plan_not_found`);
       throw new Error(`Plan not found: ${request.plan_id}`);
@@ -226,12 +226,12 @@ export class WorkLifecycle implements IWorkLifecycle {
     }));
 
     // Use DatabaseClient to add action items to plan
-    await this.db.pushActionItemsToPlan(request.plan_id, newActionItems);
+    await this.db.pushActionItemsToPlan(ctx, request.plan_id, newActionItems);
 
     // Create work items for each new action item
     const createdWorkIds: string[] = [];
     for (const actionItem of newActionItems) {
-      const workItem = await this.db.createWorkItem({
+      const workItem = await this.db.createWorkItem(ctx, {
         work_id: `work_${Date.now()}_${actionItem.id}`,
         job_id: request.job_id,
         plan_id: request.plan_id,
@@ -290,7 +290,7 @@ export class WorkLifecycle implements IWorkLifecycle {
    */
   async checkDependencies(ctx: RequestContext, work_id: string, plan: Plan): Promise<void> {
     // Use DatabaseClient to get work item
-    const work = await this.db.getWorkItem(work_id);
+    const work = await this.db.getWorkItem(ctx, work_id);
     if (!work) {
       logger.error(ctx, `operation=check_dependencies work_id=${work_id} error=work_item_not_found`);
       throw new Error(`Work item not found: ${work_id}`);
@@ -312,6 +312,7 @@ export class WorkLifecycle implements IWorkLifecycle {
 
     // Use DatabaseClient to get dependency work items
     const dependencyWorks = await this.db.getWorkItemsByActionItemIds(
+      ctx,
       work.job_id,
       actionItem.depends_on
     );
@@ -337,7 +338,7 @@ export class WorkLifecycle implements IWorkLifecycle {
     logger.info(ctx, `operation=on_work_completed work_id=${work_id}`);
 
     // Get the completed work item
-    const completedWork = await this.db.getWorkItem(work_id);
+    const completedWork = await this.db.getWorkItem(ctx, work_id);
     if (!completedWork) {
       logger.error(ctx, `operation=on_work_completed work_id=${work_id} error=work_item_not_found`);
       throw new Error(`Work item not found: ${work_id}`);
@@ -354,7 +355,7 @@ export class WorkLifecycle implements IWorkLifecycle {
     for (const actionItem of dependentActionItems) {
       if (actionItem.work_id) {
         // Get the work item for this action
-        const dependentWork = await this.db.getWorkItem(actionItem.work_id);
+        const dependentWork = await this.db.getWorkItem(ctx, actionItem.work_id);
         if (dependentWork && dependentWork.status === "pending") {
           // Check if all its dependencies are now satisfied
           await this.checkDependencies(ctx, actionItem.work_id, plan);

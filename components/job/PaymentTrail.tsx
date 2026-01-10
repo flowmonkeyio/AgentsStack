@@ -65,9 +65,9 @@ export function PaymentTrail({ payments }: PaymentTrailProps) {
   // Empty state
   if (payments.length === 0) {
     return (
-      <div className="text-center py-8 text-muted-foreground border rounded-lg">
+      <div className="text-center py-8 text-foreground-muted border rounded-lg">
         <svg
-          className="w-12 h-12 mx-auto mb-4 text-muted-foreground/50"
+          className="w-12 h-12 mx-auto mb-4 text-foreground-muted/50"
           fill="none"
           stroke="currentColor"
           viewBox="0 0 24 24"
@@ -103,15 +103,15 @@ export function PaymentTrail({ payments }: PaymentTrailProps) {
               <span className="font-medium text-foreground text-sm">
                 {payment.action}
               </span>
-              <span className="text-green-600 dark:text-green-400 font-medium">
+              <span className="text-success font-medium">
                 ${payment.amount.toFixed(2)}
               </span>
             </div>
-            <div className="text-xs text-muted-foreground mt-1">
+            <div className="text-xs text-foreground-muted mt-1">
               {payment.agent_name}
             </div>
             <div className="flex items-center justify-between mt-2 pt-2 border-t border-border">
-              <span className="text-xs text-muted-foreground">
+              <span className="text-xs text-foreground-muted">
                 {formatDate(payment.confirmed_at)}
               </span>
               <a
@@ -140,10 +140,10 @@ export function PaymentTrail({ payments }: PaymentTrailProps) {
         ))}
 
         {/* Mobile total */}
-        <div className="border border-border rounded-lg p-3 bg-muted/50">
+        <div className="border border-border rounded-lg p-3 bg-background-subtle">
           <div className="flex justify-between items-center">
             <span className="font-medium text-foreground">Total</span>
-            <span className="text-green-600 dark:text-green-400 font-bold">
+            <span className="text-success font-bold">
               ${totalAmount.toFixed(2)}
             </span>
           </div>
@@ -154,19 +154,19 @@ export function PaymentTrail({ payments }: PaymentTrailProps) {
       <table className="hidden md:table w-full border-collapse">
         <thead>
           <tr className="border-b border-border">
-            <th className="text-left p-3 text-sm font-medium text-muted-foreground">
+            <th className="text-left p-3 text-sm font-medium text-foreground-muted">
               Action
             </th>
-            <th className="text-left p-3 text-sm font-medium text-muted-foreground">
+            <th className="text-left p-3 text-sm font-medium text-foreground-muted">
               Agent
             </th>
-            <th className="text-right p-3 text-sm font-medium text-muted-foreground">
+            <th className="text-right p-3 text-sm font-medium text-foreground-muted">
               Amount
             </th>
-            <th className="text-left p-3 text-sm font-medium text-muted-foreground">
+            <th className="text-left p-3 text-sm font-medium text-foreground-muted">
               Transaction
             </th>
-            <th className="text-left p-3 text-sm font-medium text-muted-foreground">
+            <th className="text-left p-3 text-sm font-medium text-foreground-muted">
               Confirmed
             </th>
           </tr>
@@ -175,11 +175,11 @@ export function PaymentTrail({ payments }: PaymentTrailProps) {
           {payments.map((payment) => (
             <tr
               key={payment.work_id}
-              className="border-b border-border hover:bg-muted/30"
+              className="border-b border-border hover:bg-background-card-hover"
             >
               <td className="p-3 text-foreground">{payment.action}</td>
-              <td className="p-3 text-muted-foreground">{payment.agent_name}</td>
-              <td className="p-3 text-right text-green-600 dark:text-green-400 font-medium">
+              <td className="p-3 text-foreground-muted">{payment.agent_name}</td>
+              <td className="p-3 text-right text-success font-medium">
                 ${payment.amount.toFixed(2)}
               </td>
               <td className="p-3">
@@ -205,17 +205,17 @@ export function PaymentTrail({ payments }: PaymentTrailProps) {
                   </svg>
                 </a>
               </td>
-              <td className="p-3 text-sm text-muted-foreground">
+              <td className="p-3 text-sm text-foreground-muted">
                 {formatDate(payment.confirmed_at)}
               </td>
             </tr>
           ))}
 
           {/* Total row */}
-          <tr className="bg-muted/50">
+          <tr className="bg-background-subtle">
             <td className="p-3 font-medium text-foreground">Total</td>
             <td className="p-3" />
-            <td className="p-3 text-right text-green-600 dark:text-green-400 font-bold">
+            <td className="p-3 text-right text-success font-bold">
               ${totalAmount.toFixed(2)}
             </td>
             <td className="p-3" />

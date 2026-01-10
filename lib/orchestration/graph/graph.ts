@@ -16,7 +16,7 @@
 import { StateGraph, END, START, MemorySaver } from "@langchain/langgraph";
 import type { MongoClient } from "mongodb";
 import type { RequestContext } from "@/lib/logging";
-import { createLogger } from "@/lib/logging";
+import { createLogger, createContext } from "@/lib/logging";
 
 const logger = createLogger("graph");
 
@@ -33,7 +33,8 @@ class MongoDBSaver extends MemorySaver {
   constructor(_options: MongoDBSaverOptions) {
     super();
     // TODO: Implement MongoDB persistence
-    console.warn("MongoDBSaver: Using in-memory fallback. Install @langchain/langgraph-checkpoint-mongodb for persistence.");
+    const ctx = createContext();
+    logger.warn(ctx, "operation=mongodb_saver status=fallback reason=in_memory_mode");
   }
 }
 
