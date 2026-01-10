@@ -110,13 +110,13 @@ async function handleStaleWork(
 
   if (canRetry) {
     // Transition to stale, then retry dispatch
-    await lifecycle.transition(work.work_id, "poll_timeout");
-    await lifecycle.transition(work.work_id, "retry_dispatch");
+    await lifecycle.transition(ctx, work.work_id, "poll_timeout");
+    await lifecycle.transition(ctx, work.work_id, "retry_dispatch");
     await dispatchToAgent(ctx, work.work_id, deps);
   } else {
     // Max retries exceeded
     logger.warn(ctx, `operation=handle_stale work_id=${work.work_id} status=max_retries_exceeded`);
-    await lifecycle.transition(work.work_id, "max_stale_retries");
+    await lifecycle.transition(ctx, work.work_id, "max_stale_retries");
   }
 }
 

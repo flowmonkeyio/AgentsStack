@@ -34,25 +34,26 @@ const logger = createLogger("work-lifecycle");
 /**
  * Extended DatabaseClient interface with methods required by WorkLifecycle.
  * These methods should be added to the main DatabaseClient interface.
+ * All methods take RequestContext as the FIRST parameter for tracing.
  */
 export interface ExtendedDatabaseClient extends DatabaseClient {
   /**
    * Update specific fields of a work item (partial update).
    * This is used by state transitions to update status and related fields.
    */
-  updateWorkItemFields(work_id: string, updates: Partial<WorkItem>): Promise<void>;
+  updateWorkItemFields(ctx: RequestContext, work_id: string, updates: Partial<WorkItem>): Promise<void>;
 
   /**
    * Get work items for specific action item IDs within a job.
    * Used for dependency checking.
    */
-  getWorkItemsByActionItemIds(job_id: string, action_item_ids: number[]): Promise<WorkItem[]>;
+  getWorkItemsByActionItemIds(ctx: RequestContext, job_id: string, action_item_ids: number[]): Promise<WorkItem[]>;
 
   /**
    * Add new action items to a plan.
    * Used for dynamic TODO spawning.
    */
-  pushActionItemsToPlan(plan_id: string, newItems: ActionItem[]): Promise<void>;
+  pushActionItemsToPlan(ctx: RequestContext, plan_id: string, newItems: ActionItem[]): Promise<void>;
 }
 
 // =============================================================================

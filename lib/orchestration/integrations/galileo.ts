@@ -134,7 +134,7 @@ export async function verifyWork(
   }
 
   // Transition to verifying
-  await lifecycle.transition(work_id, "start_verification");
+  await lifecycle.transition(ctx, work_id, "start_verification");
 
   // Call Galileo for verification
   let galileoResponse;
@@ -174,7 +174,7 @@ export async function verifyWork(
 
   // Transition based on decision
   if (decision === "pass") {
-    await lifecycle.transition(work_id, "verification_pass", verificationPayload);
+    await lifecycle.transition(ctx, work_id, "verification_pass", verificationPayload);
 
     emitEvent({
       type: "work:verified",
@@ -188,7 +188,7 @@ export async function verifyWork(
       previous_output: work.output,
       suggestions: galileoResponse.suggestions,
     };
-    await lifecycle.transition(work_id, "verification_retry", retryPayload);
+    await lifecycle.transition(ctx, work_id, "verification_retry", retryPayload);
 
     logger.info(ctx, `operation=verify_work_retry work_id=${work_id} attempt=${work.attempt + 1} issues=${galileoResponse.issues.length}`);
 
@@ -201,7 +201,7 @@ export async function verifyWork(
     });
   } else {
     // reject
-    await lifecycle.transition(work_id, "verification_reject", verificationPayload);
+    await lifecycle.transition(ctx, work_id, "verification_reject", verificationPayload);
 
     logger.warn(ctx, `operation=verify_work_rejected work_id=${work_id} score=${galileoResponse.score.toFixed(2)}`);
 

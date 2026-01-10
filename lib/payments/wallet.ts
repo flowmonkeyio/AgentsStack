@@ -2,21 +2,71 @@
  * Wallet Utilities Module
  *
  * Provides wallet validation and balance checking utilities.
+ * Supports multiple assets (ETH, USDC) on Base network.
  *
  * @see /docs/designs/payments/TECH_DESIGN.md
  */
 
 import { RequestContext, createLogger } from "@/lib/logging";
+import { createPublicClient, http, formatUnits, formatEther } from "viem";
+import { baseSepolia, base } from "viem/chains";
 
-const logger = createLogger("payments");
-
-// TODO: Import from @coinbase/cdp-sdk when available
-// import { CoinbaseCDP } from '@coinbase/cdp-sdk';
+const logger = createLogger("payments:wallet");
 
 /**
  * Network type for wallet operations.
  */
 export type Network = "base-mainnet" | "base-sepolia";
+
+/**
+ * Asset balance information
+ */
+export interface AssetBalance {
+  asset: "ETH" | "USDC";
+  symbol: string;
+  balance: number;
+  balanceRaw: string;
+  decimals: number;
+  usdValue?: number;
+}
+
+/**
+ * Wallet balances response
+ */
+export interface WalletBalances {
+  address: string;
+  network: Network;
+  balances: AssetBalance[];
+  totalUsdValue: number;
+}
+
+// USDC contract addresses
+const USDC_CONTRACTS: Record<Network, `0x${string}`> = {
+  "base-sepolia": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+  "base-mainnet": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+};
+
+// ERC20 ABI for balanceOf
+const ERC20_ABI = [
+  {
+    name: "balanceOf",
+    type: "function",
+    inputs: [{ name: "account", type: "address" }],
+    outputs: [{ name: "", type: "uint256" }],
+    stateMutability: "view",
+  },
+] as const;
+
+/**
+ * Get viem public client for the network
+ */
+function getPublicClient(network: Network) {
+  const chain = network === "base-mainnet" ? base : baseSepolia;
+  return createPublicClient({
+    chain,
+    transport: http(),
+  });
+}
 
 /**
  * Validate an Ethereum wallet address.
@@ -44,9 +94,157 @@ export function isValidAddress(ctx: RequestContext, address: string): boolean {
 }
 
 /**
+ * Get the ETH balance for a wallet address.
+ *
+ * @param ctx - Request context for tracing
+ * @param address - The wallet address
+ * @param network - The network to check balance on
+ * @returns The ETH balance
+ */
+export async function getEthBalance(
+  ctx: RequestContext,
+  address: string,
+  network: Network = "base-sepolia"
+): Promise<AssetBalance> {
+  logger.info(ctx, `operation=get_eth_balance address=${address} network=${network} status=started`);
+
+  if (!validateAddress(ctx, address)) {
+    throw new Error(`Invalid wallet address: ${address}`);
+  }
+
+  try {
+    const client = getPublicClient(network);
+    const balanceWei = await client.getBalance({
+      address: address as `0x${string}`,
+    });
+
+    const balance = parseFloat(formatEther(balanceWei));
+
+    logger.info(ctx, `operation=get_eth_balance address=${address} balance=${balance} status=completed`);
+
+    return {
+      asset: "ETH",
+      symbol: "ETH",
+      balance,
+      balanceRaw: balanceWei.toString(),
+      decimals: 18,
+    };
+  } catch (error) {
+    logger.error(ctx, `operation=get_eth_balance address=${address} status=failed error=${error}`);
+    // Return zero balance on error
+    return {
+      asset: "ETH",
+      symbol: "ETH",
+      balance: 0,
+      balanceRaw: "0",
+      decimals: 18,
+    };
+  }
+}
+
+/**
  * Get the USDC balance for a wallet address.
  *
- * TODO: Implement actual CDP SDK integration
+ * @param ctx - Request context for tracing
+ * @param address - The wallet address
+ * @param network - The network to check balance on
+ * @returns The USDC balance
+ */
+export async function getUsdcBalance(
+  ctx: RequestContext,
+  address: string,
+  network: Network = "base-sepolia"
+): Promise<AssetBalance> {
+  logger.info(ctx, `operation=get_usdc_balance address=${address} network=${network} status=started`);
+
+  if (!validateAddress(ctx, address)) {
+    throw new Error(`Invalid wallet address: ${address}`);
+  }
+
+  try {
+    const client = getPublicClient(network);
+    const usdcContract = USDC_CONTRACTS[network];
+
+    const balanceRaw = await client.readContract({
+      address: usdcContract,
+      abi: ERC20_ABI,
+      functionName: "balanceOf",
+      args: [address as `0x${string}`],
+    });
+
+    // USDC has 6 decimals
+    const balance = parseFloat(formatUnits(balanceRaw, 6));
+
+    logger.info(ctx, `operation=get_usdc_balance address=${address} balance=${balance} status=completed`);
+
+    return {
+      asset: "USDC",
+      symbol: "USDC",
+      balance,
+      balanceRaw: balanceRaw.toString(),
+      decimals: 6,
+      usdValue: balance, // USDC is 1:1 with USD
+    };
+  } catch (error) {
+    logger.error(ctx, `operation=get_usdc_balance address=${address} status=failed error=${error}`);
+    // Return zero balance on error
+    return {
+      asset: "USDC",
+      symbol: "USDC",
+      balance: 0,
+      balanceRaw: "0",
+      decimals: 6,
+      usdValue: 0,
+    };
+  }
+}
+
+/**
+ * Get all balances for a wallet address (ETH + USDC).
+ *
+ * @param ctx - Request context for tracing
+ * @param address - The wallet address
+ * @param network - The network to check balance on
+ * @returns All wallet balances
+ */
+export async function getWalletBalances(
+  ctx: RequestContext,
+  address: string,
+  network: Network = "base-sepolia"
+): Promise<WalletBalances> {
+  logger.info(ctx, `operation=get_wallet_balances address=${address} network=${network} status=started`);
+
+  if (!validateAddress(ctx, address)) {
+    throw new Error(`Invalid wallet address: ${address}`);
+  }
+
+  // Fetch both balances in parallel
+  const [ethBalance, usdcBalance] = await Promise.all([
+    getEthBalance(ctx, address, network),
+    getUsdcBalance(ctx, address, network),
+  ]);
+
+  // Calculate total USD value (ETH price would need to be fetched in production)
+  // For now, we only count USDC as USD value
+  const totalUsdValue = usdcBalance.usdValue || 0;
+
+  const result: WalletBalances = {
+    address,
+    network,
+    balances: [ethBalance, usdcBalance],
+    totalUsdValue,
+  };
+
+  logger.info(
+    ctx,
+    `operation=get_wallet_balances address=${address} eth=${ethBalance.balance} usdc=${usdcBalance.balance} status=completed`
+  );
+
+  return result;
+}
+
+/**
+ * Get the USDC balance only (for backwards compatibility).
  *
  * @param ctx - Request context for tracing
  * @param address - The wallet address
@@ -58,33 +256,8 @@ export async function getBalance(
   address: string,
   network: Network = "base-sepolia"
 ): Promise<number> {
-  logger.info(ctx, `operation=get_balance address=${address} network=${network} status=started`);
-
-  // Validate address first
-  if (!validateAddress(ctx, address)) {
-    logger.error(ctx, `operation=get_balance address=${address} status=failed reason=invalid_address`);
-    throw new Error(`Invalid wallet address: ${address}`);
-  }
-
-  // TODO: Implement actual CDP SDK call
-  // const cdp = new CoinbaseCDP({
-  //   apiKey: process.env.CDP_API_KEY,
-  //   apiSecret: process.env.CDP_API_SECRET
-  // });
-  //
-  // const balance = await cdp.getBalance({
-  //   address,
-  //   currency: "USDC",
-  //   network
-  // });
-  // return balance.amount;
-
-  // Placeholder: Return simulated balance for development
-  // In production, this will call the CDP SDK
-  logger.warn(ctx, `operation=get_balance address=${address} network=${network} status=placeholder`);
-  const balance = 1000.0; // Simulated balance for development
-  logger.info(ctx, `operation=get_balance address=${address} balance=${balance} status=completed`);
-  return balance;
+  const usdcBalance = await getUsdcBalance(ctx, address, network);
+  return usdcBalance.balance;
 }
 
 /**

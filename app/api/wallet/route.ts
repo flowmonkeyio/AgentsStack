@@ -2,8 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@clerk/nextjs/server";
 import { createContext, createLogger } from "@/lib/logging";
 import { getDatabaseClient } from "@/lib/db";
-import { getPaymentClient } from "@/lib/payments";
-import { validateAddress } from "@/lib/payments/wallet";
+import { getWalletBalances, validateAddress, Network } from "@/lib/payments/wallet";
 
 const logger = createLogger("api:wallet");
 
@@ -38,30 +37,43 @@ export async function GET() {
       );
     }
 
-    // Get balance from payment client
-    const paymentClient = getPaymentClient(ctx);
-    let balance = 0;
+    const network = (process.env.CDP_NETWORK || "base-sepolia") as Network;
+
+    // Get all balances from blockchain
+    let walletBalances;
     try {
-      balance = await paymentClient.getBalance(ctx, user.wallet.address);
+      walletBalances = await getWalletBalances(ctx, user.wallet.address, network);
     } catch (err) {
       logger.warn(ctx, `operation=get_wallet user_id=${userId} balance_fetch_failed error=${err}`);
+      // Return empty balances on error
+      walletBalances = {
+        address: user.wallet.address,
+        network,
+        balances: [
+          { asset: "ETH", symbol: "ETH", balance: 0, balanceRaw: "0", decimals: 18 },
+          { asset: "USDC", symbol: "USDC", balance: 0, balanceRaw: "0", decimals: 6, usdValue: 0 },
+        ],
+        totalUsdValue: 0,
+      };
     }
 
-    // Get recent transactions
-    const allTransactions = await db.getTransactionsByJob(ctx, userId); // This won't work, need to add method
+    // Find USDC balance for credits
+    const usdcBalance = walletBalances.balances.find(b => b.asset === "USDC");
+    const credits = usdcBalance?.balance || 0;
 
     const wallet = {
       address: user.wallet.address,
       type: user.wallet.provider === "coinbase" ? "embedded" : "external",
       provider: user.wallet.provider,
       verified: user.wallet.verified,
-      balance: balance,
-      credits: balance, // For now, credits = balance
-      network: process.env.CDP_NETWORK || "base-sepolia",
+      network,
+      balances: walletBalances.balances,
+      credits, // USDC balance used for payments
+      totalUsdValue: walletBalances.totalUsdValue,
       transactions: [], // TODO: Implement transaction history
     };
 
-    logger.info(ctx, `operation=get_wallet user_id=${userId} balance=${balance} status=completed`);
+    logger.info(ctx, `operation=get_wallet user_id=${userId} credits=${credits} status=completed`);
 
     return NextResponse.json({ wallet });
   } catch (error) {
@@ -110,7 +122,6 @@ export async function POST(request: NextRequest) {
 
     // Create user if doesn't exist
     if (!user) {
-      // Get email from Clerk (we'd need to fetch this properly)
       user = await db.createUser(ctx, {
         user_id: userId,
         email: "", // Would come from Clerk
@@ -129,28 +140,48 @@ export async function POST(request: NextRequest) {
     } else {
       // Update existing user's wallet
       // TODO: Add updateUserWallet method to database client
-      // For now, we'll need to do a direct update
     }
 
-    // Get balance
-    const paymentClient = getPaymentClient(ctx);
-    let balance = 0;
+    const network = (process.env.CDP_NETWORK || "base-sepolia") as Network;
+
+    // Get all balances
+    let walletBalances;
     if (address) {
       try {
-        balance = await paymentClient.getBalance(ctx, address);
+        walletBalances = await getWalletBalances(ctx, address, network);
       } catch (err) {
         logger.warn(ctx, `operation=create_wallet balance_fetch_failed error=${err}`);
+        walletBalances = {
+          address,
+          network,
+          balances: [
+            { asset: "ETH", symbol: "ETH", balance: 0, balanceRaw: "0", decimals: 18 },
+            { asset: "USDC", symbol: "USDC", balance: 0, balanceRaw: "0", decimals: 6, usdValue: 0 },
+          ],
+          totalUsdValue: 0,
+        };
       }
+    } else {
+      walletBalances = {
+        address: user.wallet.address,
+        network,
+        balances: [],
+        totalUsdValue: 0,
+      };
     }
+
+    const usdcBalance = walletBalances.balances.find(b => b.asset === "USDC");
+    const credits = usdcBalance?.balance || 0;
 
     const wallet = {
       address: address || user.wallet.address,
       type: provider === "coinbase" ? "embedded" : "external",
       provider,
       verified: false,
-      balance,
-      credits: balance,
-      network: process.env.CDP_NETWORK || "base-sepolia",
+      network,
+      balances: walletBalances.balances,
+      credits,
+      totalUsdValue: walletBalances.totalUsdValue,
       transactions: [],
     };
 

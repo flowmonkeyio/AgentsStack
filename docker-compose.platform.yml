@@ -1,0 +1,206 @@
+version: '3.8'
+
+# ============================================================================
+# AgentsStack Platform + External Agents
+# Complete development environment with platform and MCP agents
+# ============================================================================
+
+services:
+  # ==========================================================================
+  # AgentsStack Platform
+  # ==========================================================================
+  platform:
+    build:
+      context: .
+      dockerfile: Dockerfile.platform
+
+    container_name: agentstack-platform
+
+    ports:
+      - "3000:3000"  # Platform HTTP
+
+    environment:
+      # MongoDB
+      MONGODB_URI: ${MONGODB_URI}
+
+      # OpenRouter (Internal agents)
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
+
+      # Voyage AI (Agent discovery)
+      VOYAGE_API_KEY: ${VOYAGE_API_KEY}
+
+      # Galileo AI (Verification)
+      GALILEO_API_KEY: ${GALILEO_API_KEY}
+      GALILEO_PROJECT_ID: ${GALILEO_PROJECT_ID}
+      GALILEO_ENVIRONMENT: ${GALILEO_ENVIRONMENT:-development}
+
+      # Coinbase CDP (Payments)
+      CDP_API_KEY_ID: ${CDP_API_KEY_ID}
+      CDP_API_KEY_SECRET: ${CDP_API_KEY_SECRET}
+      CDP_WALLET_SECRET: ${CDP_WALLET_SECRET}
+      CDP_NETWORK: ${CDP_NETWORK:-base-sepolia}
+      PLATFORM_WALLET_ID: ${PLATFORM_WALLET_ID}
+      PLATFORM_WALLET_ADDRESS: ${PLATFORM_WALLET_ADDRESS}
+
+      # Clerk (Auth)
+      NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY}
+      CLERK_SECRET_KEY: ${CLERK_SECRET_KEY}
+
+      # App
+      NODE_ENV: ${NODE_ENV:-development}
+      NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-http://localhost:3000}
+
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      image-gen-agent:
+        condition: service_healthy
+
+    restart: unless-stopped
+
+    networks:
+      - agentstack-network
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 40s
+
+  # ==========================================================================
+  # MongoDB Atlas (Local Development)
+  # ==========================================================================
+  mongodb:
+    image: mongo:7
+    container_name: agentstack-mongodb
+
+    ports:
+      - "27017:27017"
+
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USERNAME:-agentstack}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD:-agentstack_dev}
+      MONGO_INITDB_DATABASE: agentstack
+
+    volumes:
+      - mongodb-data:/data/db
+
+    restart: unless-stopped
+
+    networks:
+      - agentstack-network
+
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ==========================================================================
+  # Redis (Shared cache & task storage)
+  # ==========================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: agentstack-redis
+
+    ports:
+      - "6379:6379"
+
+    volumes:
+      - redis-data:/data
+
+    restart: unless-stopped
+
+    networks:
+      - agentstack-network
+
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  # ==========================================================================
+  # External Agent: Image Generator (MCP)
+  # ==========================================================================
+  image-gen-agent:
+    build:
+      context: ./external_agents
+      dockerfile: Dockerfile
+      target: production
+
+    container_name: agentstack-image-gen-mcp
+
+    ports:
+      - "3001:3000"  # External access
+
+    environment:
+      # Agent Configuration
+      AGENT_NAME: ImageGenerator
+      AGENT_VERSION: "1.0.0"
+      NODE_ENV: production
+      PORT: 3000
+      HOST: 0.0.0.0
+
+      # OpenRouter API (REQUIRED)
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
+      OPENROUTER_DEFAULT_MODEL: google/gemini-2.0-flash-exp:image
+      OPENROUTER_FALLBACK_MODEL: flux/flux-1.1-pro
+
+      # Task Storage (shared Redis)
+      TASK_STORE_TYPE: redis
+      REDIS_URL: redis://redis:6379
+      REDIS_DB: 1  # Different DB than platform
+      TASK_TTL_SECONDS: 3600
+
+      # Timeouts
+      IMAGE_GENERATION_TIMEOUT: 300000
+      HTTP_REQUEST_TIMEOUT: 60000
+      MAX_CONCURRENT_TASKS: 10
+
+      # Callbacks
+      CALLBACK_TIMEOUT: 10000
+      CALLBACK_RETRY_ATTEMPTS: 3
+      CALLBACK_RETRY_DELAY: 1000
+
+      # Logging
+      LOG_LEVEL: info
+      LOG_FORMAT: json
+
+      # Cost
+      DEFAULT_IMAGE_COST: 0.08
+
+      # Agent Registration
+      AGENT_WALLET_ADDRESS: "0x0000000000000000000000000000000000000001"
+      AGENT_BASE_PRICE: 0.08
+      AGENT_CAPABILITIES: "hero images, social graphics, product mockups, illustrations"
+
+    depends_on:
+      redis:
+        condition: service_healthy
+
+    restart: unless-stopped
+
+    networks:
+      - agentstack-network
+
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000/health', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+
+networks:
+  agentstack-network:
+    driver: bridge
+
+volumes:
+  mongodb-data:
+    driver: local
+  redis-data:
+    driver: local

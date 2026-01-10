@@ -2,11 +2,13 @@
  * Demo Agents Registry
  *
  * Sample agents for hackathon demonstration and testing.
+ * Includes both cloud-hosted and local MCP-based agents.
  *
  * @see /docs/designs/external-agents/TECH_DESIGN.md
  */
 
 import type { AgentRegistration } from '../types';
+import { getMCPAgents, type MCPAgentRegistration } from '../../agents/registry';
 
 // Demo agent configurations
 export { contentStrategistConfig, ContentStrategistAgent } from './content-strategist';
@@ -15,9 +17,9 @@ export { imageGenConfig, ImageGenAgent } from './image-gen';
 export { imageGenBasicConfig, ImageGenBasicAgent } from './image-gen-basic';
 
 /**
- * All demo agent configurations for registration.
+ * Cloud-hosted demo agents (Vercel deployments)
  */
-export const DEMO_AGENTS: AgentRegistration[] = [
+const CLOUD_DEMO_AGENTS: AgentRegistration[] = [
   {
     name: 'ContentStrategist',
     description: 'Marketing strategy and audience analysis',
@@ -62,4 +64,34 @@ export const DEMO_AGENTS: AgentRegistration[] = [
     supports_callback: true,
     wallet: '0x0000000000000000000000000000000000000004', // Placeholder
   },
+];
+
+/**
+ * Convert MCP agent to AgentRegistration format
+ */
+function mcpAgentToRegistration(mcpAgent: MCPAgentRegistration): AgentRegistration {
+  return {
+    name: mcpAgent.name,
+    description: mcpAgent.description,
+    url: mcpAgent.url,
+    pricing: mcpAgent.pricing,
+    capabilities: mcpAgent.capabilities,
+    tags: mcpAgent.tags,
+    supports_async: mcpAgent.supports_async,
+    supports_callback: mcpAgent.supports_callback,
+    wallet: mcpAgent.wallet,
+    owner_email: mcpAgent.author ? `${mcpAgent.author.toLowerCase()}@agentstack.dev` : undefined,
+  };
+}
+
+/**
+ * All demo agent configurations for registration.
+ * Includes both cloud-hosted and local MCP-based agents.
+ */
+export const DEMO_AGENTS: AgentRegistration[] = [
+  // Cloud-hosted agents
+  ...CLOUD_DEMO_AGENTS,
+
+  // Local MCP agents (if running via docker-compose)
+  ...getMCPAgents().map(mcpAgentToRegistration),
 ];
