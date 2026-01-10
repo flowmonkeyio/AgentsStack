@@ -13,11 +13,12 @@ const isPublicRoute = createRouteMatcher([
   "/api/agents",
   "/api/agents/discover",
   "/api/webhooks(.*)",
+  "/api/health", // Health check endpoint
 ]);
 
-export default clerkMiddleware(async (auth, request) => {
+export default clerkMiddleware((auth, request) => {
   if (!isPublicRoute(request)) {
-    await auth().protect();
+    auth.protect();
   }
 });
 
