@@ -7,9 +7,13 @@
  */
 
 import type { VoyageAIClient } from "voyageai";
+import type { RequestContext } from "@/lib/logging";
+import { createLogger } from "@/lib/logging";
 import type { HealthCheckResult } from "./types";
 import { getVoyageClient } from "./embeddings";
 import { testVectorSearchIndex } from "./vector-search";
+
+const logger = createLogger("discovery");
 
 // =============================================================================
 // HEALTH CHECK FUNCTIONS
@@ -19,10 +23,12 @@ import { testVectorSearchIndex } from "./vector-search";
  * Performs detailed health check on Voyage AI and MongoDB vector search.
  * Includes latency measurements and error details.
  *
+ * @param ctx - Request context for tracing
  * @param voyageClient - Optional Voyage AI client (uses singleton if not provided)
  * @returns HealthCheckResult with status and details
  */
 export async function healthCheck(
+  ctx: RequestContext,
   voyageClient?: VoyageAIClient
 ): Promise<HealthCheckResult> {
   const client = voyageClient ?? getVoyageClient();
@@ -51,7 +57,7 @@ export async function healthCheck(
   // Check MongoDB Vector Search
   const mongoStart = Date.now();
   try {
-    const indexWorking = await testVectorSearchIndex();
+    const indexWorking = await testVectorSearchIndex(ctx);
     result.mongo_vector = indexWorking;
     result.details!.mongo_latency_ms = Date.now() - mongoStart;
 
@@ -65,6 +71,8 @@ export async function healthCheck(
       error instanceof Error ? error.message : "Unknown error";
   }
 
+  logger.info(ctx, `operation=health_check voyage=${result.voyage} mongo_vector=${result.mongo_vector}`);
+
   return result;
 }
 
@@ -72,13 +80,15 @@ export async function healthCheck(
  * Simplified health check that returns just boolean status.
  * Use for quick liveness checks.
  *
+ * @param ctx - Request context for tracing
  * @param voyageClient - Optional Voyage AI client (uses singleton if not provided)
  * @returns Object with voyage and mongo_vector boolean status
  */
 export async function quickHealthCheck(
+  ctx: RequestContext,
   voyageClient?: VoyageAIClient
 ): Promise<{ voyage: boolean; mongo_vector: boolean }> {
-  const result = await healthCheck(voyageClient);
+  const result = await healthCheck(ctx, voyageClient);
   return {
     voyage: result.voyage,
     mongo_vector: result.mongo_vector,

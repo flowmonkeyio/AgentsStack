@@ -7,6 +7,7 @@
  * @see /docs/designs/orchestration/graph/TECH_DESIGN.md
  */
 
+import type { RequestContext } from "@/lib/logging";
 import type { OrchestrationState } from "../types";
 
 // =============================================================================
@@ -15,9 +16,10 @@ import type { OrchestrationState } from "../types";
 
 /**
  * Type for a graph node function.
- * Takes full state, returns partial state update.
+ * Takes ctx as first parameter and full state, returns partial state update.
  */
 export type NodeFunction = (
+  ctx: RequestContext,
   state: OrchestrationState
 ) => Promise<Partial<OrchestrationState>>;
 
@@ -95,10 +97,12 @@ export type {
  * - job_completed: All TODOs done
  * - job_failed: Error state
  *
+ * @param ctx - Request context for logging
  * @param state - Current graph state
  * @returns Partial state update with decision
  */
 export async function mainAgentNode(
+  ctx: RequestContext,
   state: OrchestrationState
 ): Promise<Partial<OrchestrationState>> {
   // Placeholder - to be implemented
@@ -110,10 +114,12 @@ export async function mainAgentNode(
  *
  * Uses Galileo API for instruction adherence scoring.
  *
+ * @param ctx - Request context for logging
  * @param state - Current graph state
  * @returns Partial state update with verification result
  */
 export async function galileoVerifyNode(
+  ctx: RequestContext,
   state: OrchestrationState
 ): Promise<Partial<OrchestrationState>> {
   // Placeholder - to be implemented
@@ -125,10 +131,12 @@ export async function galileoVerifyNode(
  *
  * Uses x402 protocol for USDC payments.
  *
+ * @param ctx - Request context for logging
  * @param state - Current graph state
  * @returns Partial state update with payment status
  */
 export async function paymentNode(
+  ctx: RequestContext,
   state: OrchestrationState
 ): Promise<Partial<OrchestrationState>> {
   // Placeholder - to be implemented

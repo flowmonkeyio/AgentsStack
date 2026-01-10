@@ -10,6 +10,8 @@
  */
 
 import type { VoyageAIClient } from "voyageai";
+import type { RequestContext } from "@/lib/logging";
+import { createLogger } from "@/lib/logging";
 import type { LLMOperation } from "@/types";
 import type {
   DiscoveryService,
@@ -25,6 +27,8 @@ import { vectorSearchWithFilter } from "./vector-search";
 import { rerankCandidates } from "./rerank";
 import { healthCheck as performHealthCheck, quickHealthCheck } from "./health";
 import { sleep } from "./utils";
+
+const logger = createLogger("discovery");
 
 // =============================================================================
 // DISCOVERY SERVICE IMPLEMENTATION
@@ -45,16 +49,19 @@ export class DiscoveryServiceImpl implements DiscoveryService {
    * Discover agents for a task.
    * Returns ranked candidates with costs for billing.
    */
-  async discoverAgents(request: DiscoveryRequest): Promise<DiscoveryResult> {
+  async discoverAgents(ctx: RequestContext, request: DiscoveryRequest): Promise<DiscoveryResult> {
     const startTime = Date.now();
     const operations: LLMOperation[] = [];
 
+    logger.info(ctx, `operation=discover_agents query_length=${request.task_description.length} max_price=${request.max_price ?? "none"} limit=${request.limit ?? 10}`);
+
     // Step 1: Embed the query
-    const embedResult = await embedQuery(request.task_description, this.voyageClient);
+    const embedResult = await embedQuery(ctx, request.task_description, this.voyageClient);
     operations.push(embedResult.operation);
 
     // Step 2: Vector search with filters
     const vectorResults = await vectorSearchWithFilter(
+      ctx,
       embedResult.embedding,
       request.max_price ?? Infinity,
       request.min_quality ?? 0.8,
@@ -63,16 +70,20 @@ export class DiscoveryServiceImpl implements DiscoveryService {
 
     // If no results, return early
     if (vectorResults.length === 0) {
+      const totalCost = operations.reduce((sum, op) => sum + op.total_cost, 0);
+      const searchTime = Date.now() - startTime;
+      logger.debug(ctx, `operation=discover_complete candidates=0 total_cost=${totalCost.toFixed(6)} duration_ms=${searchTime}`);
       return {
         candidates: [],
         llm_operations: operations,
-        total_cost: operations.reduce((sum, op) => sum + op.total_cost, 0),
-        search_time_ms: Date.now() - startTime,
+        total_cost: totalCost,
+        search_time_ms: searchTime,
       };
     }
 
     // Step 3: Rerank
     const rerankResponse = await rerankCandidates(
+      ctx,
       request.task_description,
       vectorResults,
       request.limit ?? 10,
@@ -80,11 +91,15 @@ export class DiscoveryServiceImpl implements DiscoveryService {
     );
     operations.push(rerankResponse.operation);
 
+    const totalCost = operations.reduce((sum, op) => sum + op.total_cost, 0);
+    const searchTime = Date.now() - startTime;
+    logger.debug(ctx, `operation=discover_complete candidates=${rerankResponse.results.length} total_cost=${totalCost.toFixed(6)} duration_ms=${searchTime}`);
+
     return {
       candidates: rerankResponse.results,
       llm_operations: operations,
-      total_cost: operations.reduce((sum, op) => sum + op.total_cost, 0),
-      search_time_ms: Date.now() - startTime,
+      total_cost: totalCost,
+      search_time_ms: searchTime,
     };
   }
 
@@ -92,22 +107,22 @@ export class DiscoveryServiceImpl implements DiscoveryService {
    * Embed agent capabilities (for registration).
    * Returns embedding vector and operation for cost tracking.
    */
-  async embedCapabilities(capabilities: string): Promise<EmbeddingResult> {
-    return embedCapabilitiesFn(capabilities, this.voyageClient);
+  async embedCapabilities(ctx: RequestContext, capabilities: string): Promise<EmbeddingResult> {
+    return embedCapabilitiesFn(ctx, capabilities, this.voyageClient);
   }
 
   /**
    * Quick health check for Voyage AI and MongoDB vector search.
    */
-  async healthCheck(): Promise<{ voyage: boolean; mongo_vector: boolean }> {
-    return quickHealthCheck(this.voyageClient);
+  async healthCheck(ctx: RequestContext): Promise<{ voyage: boolean; mongo_vector: boolean }> {
+    return quickHealthCheck(ctx, this.voyageClient);
   }
 
   /**
    * Detailed health check with latency and error information.
    */
-  async detailedHealthCheck(): Promise<HealthCheckResult> {
-    return performHealthCheck(this.voyageClient);
+  async detailedHealthCheck(ctx: RequestContext): Promise<HealthCheckResult> {
+    return performHealthCheck(ctx, this.voyageClient);
   }
 }
 
@@ -119,6 +134,7 @@ export class DiscoveryServiceImpl implements DiscoveryService {
  * Discover agents with event emission for SSE streaming.
  * Emits events at each stage of the discovery pipeline.
  *
+ * @param ctx - Request context for tracing
  * @param request - Discovery request parameters
  * @param emitter - Event emitter for SSE streaming
  * @param job_id - Job ID for event correlation
@@ -126,6 +142,7 @@ export class DiscoveryServiceImpl implements DiscoveryService {
  * @returns DiscoveryResult with candidates and cost tracking
  */
 export async function discoverAgentsWithEvents(
+  ctx: RequestContext,
   request: DiscoveryRequest,
   emitter: DiscoveryEventEmitter = noOpEmitter,
   job_id?: string,
@@ -134,6 +151,8 @@ export async function discoverAgentsWithEvents(
   const client = voyageClient ?? getVoyageClient();
   const startTime = Date.now();
   const operations: LLMOperation[] = [];
+
+  logger.info(ctx, `operation=discover_agents_with_events query_length=${request.task_description.length} job_id=${job_id ?? "none"}`);
 
   // Event: Discovery started
   if (job_id) {
@@ -147,7 +166,7 @@ export async function discoverAgentsWithEvents(
 
   try {
     // Step 1: Embed the query
-    const embedResult = await embedQuery(request.task_description, client);
+    const embedResult = await embedQuery(ctx, request.task_description, client);
     operations.push(embedResult.operation);
 
     // Event: Embedding complete
@@ -164,6 +183,7 @@ export async function discoverAgentsWithEvents(
     // Step 2: Vector search
     const vectorSearchStart = Date.now();
     const vectorResults = await vectorSearchWithFilter(
+      ctx,
       embedResult.embedding,
       request.max_price ?? Infinity,
       request.min_quality ?? 0.8,
@@ -198,6 +218,8 @@ export async function discoverAgentsWithEvents(
         });
       }
 
+      logger.debug(ctx, `operation=discover_with_events_complete candidates=0 total_cost=${totalCost.toFixed(6)} duration_ms=${totalTime}`);
+
       return {
         candidates: [],
         llm_operations: operations,
@@ -208,6 +230,7 @@ export async function discoverAgentsWithEvents(
 
     // Step 3: Rerank
     const rerankResponse = await rerankCandidates(
+      ctx,
       request.task_description,
       vectorResults,
       request.limit ?? 10,
@@ -240,6 +263,8 @@ export async function discoverAgentsWithEvents(
       });
     }
 
+    logger.debug(ctx, `operation=discover_with_events_complete candidates=${rerankResponse.results.length} total_cost=${totalCost.toFixed(6)} duration_ms=${totalTime}`);
+
     return {
       candidates: rerankResponse.results,
       llm_operations: operations,
@@ -256,6 +281,7 @@ export async function discoverAgentsWithEvents(
         timestamp: new Date(),
       });
     }
+    logger.error(ctx, `operation=discover_with_events_error error="${error instanceof Error ? error.message : "Unknown error"}"`);
     throw error;
   }
 }
@@ -280,12 +306,14 @@ function isVoyageError(error: unknown): error is VoyageError {
  * Discover agents with retry logic for transient failures.
  * Implements exponential backoff for rate limiting and server errors.
  *
+ * @param ctx - Request context for tracing
  * @param request - Discovery request parameters
  * @param maxRetries - Maximum number of retry attempts (default 3)
  * @param voyageClient - Optional Voyage AI client
  * @returns DiscoveryResult with candidates and cost tracking
  */
 export async function discoverAgentsWithRetry(
+  ctx: RequestContext,
   request: DiscoveryRequest,
   maxRetries: number = 3,
   voyageClient?: VoyageAIClient
@@ -294,19 +322,19 @@ export async function discoverAgentsWithRetry(
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      return await service.discoverAgents(request);
+      return await service.discoverAgents(ctx, request);
     } catch (err) {
       if (isVoyageError(err)) {
         if (err.statusCode === 429) {
           // Rate limited - exponential backoff
           const delay = Math.pow(2, attempt) * 1000;
-          console.log(`Rate limited. Retrying in ${delay}ms...`);
+          logger.warn(ctx, `operation=discover_retry status=rate_limited attempt=${attempt} delay_ms=${delay}`);
           await sleep(delay);
           continue;
         }
         if (err.statusCode !== undefined && err.statusCode >= 500) {
           // Server error - retry
-          console.log(`Server error. Attempt ${attempt}/${maxRetries}`);
+          logger.warn(ctx, `operation=discover_retry status=server_error attempt=${attempt} max_retries=${maxRetries}`);
           await sleep(1000 * attempt);
           continue;
         }
@@ -315,6 +343,7 @@ export async function discoverAgentsWithRetry(
     }
   }
 
+  logger.error(ctx, `operation=discover_retry status=failed max_retries=${maxRetries}`);
   throw new Error(`Discovery failed after ${maxRetries} attempts`);
 }
 

@@ -9,7 +9,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@clerk/nextjs/server";
 import { getDatabaseClient } from "@/lib/db";
+import { createContext, createLogger } from "@/lib/logging";
 import type { GetWorkItemResponse, ErrorResponse } from "@/types/api";
+
+const logger = createLogger("api");
 
 // =============================================================================
 // GET /api/jobs/:id/work/:workId - Get full work item content
@@ -19,22 +22,26 @@ export async function GET(
   _request: NextRequest,
   { params }: { params: Promise<{ id: string; workId: string }> }
 ): Promise<NextResponse<GetWorkItemResponse | ErrorResponse>> {
+  const ctx = createContext();
+  const { id: job_id, workId: work_id } = await params;
+  logger.info(ctx, `operation=get_work_item job_id=${job_id} work_id=${work_id} started=true`);
+
   try {
     // Authenticate
     const { userId: clerkId } = await auth();
     if (!clerkId) {
+      logger.info(ctx, `operation=get_work_item work_id=${work_id} status=unauthorized`);
       return NextResponse.json(
         { error: "Unauthorized", code: "UNAUTHORIZED" },
         { status: 401 }
       );
     }
 
-    const { id: job_id, workId: work_id } = await params;
-
     // Get user
     const db = getDatabaseClient();
-    const user = await db.getUser(clerkId);
+    const user = await db.getUser(ctx, clerkId);
     if (!user) {
+      logger.info(ctx, `operation=get_work_item work_id=${work_id} status=user_not_found`);
       return NextResponse.json(
         { error: "User not found", code: "NOT_FOUND" },
         { status: 404 }
@@ -42,8 +49,9 @@ export async function GET(
     }
 
     // Get job to verify ownership
-    const job = await db.getJob(job_id);
+    const job = await db.getJob(ctx, job_id);
     if (!job) {
+      logger.info(ctx, `operation=get_work_item work_id=${work_id} job_id=${job_id} status=job_not_found`);
       return NextResponse.json(
         { error: "Job not found", code: "NOT_FOUND" },
         { status: 404 }
@@ -52,6 +60,7 @@ export async function GET(
 
     // Verify ownership
     if (job.user_id !== user.user_id) {
+      logger.info(ctx, `operation=get_work_item work_id=${work_id} status=forbidden`);
       return NextResponse.json(
         { error: "Job not found", code: "NOT_FOUND" },
         { status: 404 }
@@ -59,8 +68,9 @@ export async function GET(
     }
 
     // Get work item
-    const workItem = await db.getWorkItem(work_id);
+    const workItem = await db.getWorkItem(ctx, work_id);
     if (!workItem) {
+      logger.info(ctx, `operation=get_work_item work_id=${work_id} status=not_found`);
       return NextResponse.json(
         { error: "Work item not found", code: "NOT_FOUND" },
         { status: 404 }
@@ -69,6 +79,7 @@ export async function GET(
 
     // Verify work item belongs to this job
     if (workItem.job_id !== job_id) {
+      logger.info(ctx, `operation=get_work_item work_id=${work_id} status=wrong_job`);
       return NextResponse.json(
         { error: "Work item not found", code: "NOT_FOUND" },
         { status: 404 }
@@ -115,9 +126,10 @@ export async function GET(
         : null,
     };
 
+    logger.info(ctx, `operation=get_work_item work_id=${work_id} status=found item_status=${workItem.status}`);
     return NextResponse.json(response);
   } catch (error) {
-    console.error("Failed to fetch work item:", error);
+    logger.error(ctx, `operation=get_work_item work_id=${work_id} status=failed`, error instanceof Error ? error : undefined);
     return NextResponse.json(
       { error: "Internal server error", code: "INTERNAL_ERROR" },
       { status: 500 }

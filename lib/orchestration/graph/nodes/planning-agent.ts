@@ -12,7 +12,11 @@ import { nanoid } from "nanoid";
 import type { LLMOperation, ActionItem, Agent, PromptTemplate, Deliverable } from "@/types";
 import type { RerankResult } from "@/lib/orchestration/discovery";
 import { withTracing } from "@/lib/galileo";
+import type { RequestContext } from "@/lib/logging";
+import { createLogger } from "@/lib/logging";
 import type { OrchestrationState } from "../types";
+
+const logger = createLogger("graph");
 
 // =============================================================================
 // OPENROUTER CLIENT
@@ -200,44 +204,56 @@ Respond with valid JSON only.`;
  * Invoke planning LLM via OpenRouter
  */
 async function invokePlanningLLM(
+  ctx: RequestContext,
   input: PlanningAgentInput
 ): Promise<LLMInvokeResult<PlanningAgentOutput>> {
   const startTime = Date.now();
 
+  logger.info(ctx, `operation=invoke_planning_llm model=${PLANNING_AGENT_MODEL} status=started`);
+
   const userContent = formatPlanningInput(input);
 
-  const response = await openrouter.chat.completions.create({
-    model: PLANNING_AGENT_MODEL,
-    messages: [
-      { role: "system", content: PLANNING_AGENT_SYSTEM_PROMPT },
-      { role: "user", content: userContent },
-    ],
-    temperature: 0.7,
-    max_tokens: 4096,
-    response_format: { type: "json_object" },
-  });
-
-  const usage = response.usage;
-  const content = response.choices[0]?.message?.content ?? "{}";
-  const data = JSON.parse(content) as PlanningAgentOutput;
-
-  return {
-    data,
-    operation: {
-      operation_id: generateOperationId(),
-      timestamp: new Date(),
-      operation_type: "planning_agent",
+  try {
+    const response = await openrouter.chat.completions.create({
       model: PLANNING_AGENT_MODEL,
-      native_tokens_prompt: usage?.prompt_tokens,
-      native_tokens_completion: usage?.completion_tokens,
-      total_cost: calculateCostFromUsage(PLANNING_AGENT_MODEL, usage ?? {}),
-      metadata: {
-        duration_ms: Date.now() - startTime,
-        finish_reason: response.choices[0]?.finish_reason,
-        is_retry: input.is_plan_retry ?? false,
+      messages: [
+        { role: "system", content: PLANNING_AGENT_SYSTEM_PROMPT },
+        { role: "user", content: userContent },
+      ],
+      temperature: 0.7,
+      max_tokens: 4096,
+      response_format: { type: "json_object" },
+    });
+
+    const usage = response.usage;
+    const content = response.choices[0]?.message?.content ?? "{}";
+    const data = JSON.parse(content) as PlanningAgentOutput;
+    const durationMs = Date.now() - startTime;
+
+    logger.info(ctx, `operation=invoke_planning_llm model=${PLANNING_AGENT_MODEL} input_tokens=${usage?.prompt_tokens ?? 0} output_tokens=${usage?.completion_tokens ?? 0} duration_ms=${durationMs} status=completed`);
+
+    return {
+      data,
+      operation: {
+        operation_id: generateOperationId(),
+        timestamp: new Date(),
+        operation_type: "planning_agent",
+        model: PLANNING_AGENT_MODEL,
+        native_tokens_prompt: usage?.prompt_tokens,
+        native_tokens_completion: usage?.completion_tokens,
+        total_cost: calculateCostFromUsage(PLANNING_AGENT_MODEL, usage ?? {}),
+        metadata: {
+          duration_ms: durationMs,
+          finish_reason: response.choices[0]?.finish_reason,
+          is_retry: input.is_plan_retry ?? false,
+        },
       },
-    },
-  };
+    };
+  } catch (error) {
+    const durationMs = Date.now() - startTime;
+    logger.error(ctx, `operation=invoke_planning_llm model=${PLANNING_AGENT_MODEL} duration_ms=${durationMs} status=failed`, error instanceof Error ? error : undefined);
+    throw error;
+  }
 }
 
 /**
@@ -430,8 +446,10 @@ export function selectBestAgent(
  * Creates plan, picks agents, picks templates.
  * On retry: receives feedback from failed verification.
  */
-async function planningAgentNodeImpl(state: OrchestrationState): Promise<Partial<OrchestrationState>> {
+async function planningAgentNodeImpl(ctx: RequestContext, state: OrchestrationState): Promise<Partial<OrchestrationState>> {
   const isRetry = state.plan_verification_attempts > 0;
+
+  logger.info(ctx, `operation=planning_agent job_id=${state.job_id} is_retry=${isRetry} budget=${state.budget}`);
 
   // Build input for planning LLM
   const planInput: PlanningAgentInput = {
@@ -454,17 +472,22 @@ async function planningAgentNodeImpl(state: OrchestrationState): Promise<Partial
   };
 
   // Invoke LLM
-  const result = await invokePlanningLLM(planInput);
+  const result = await invokePlanningLLM(ctx, planInput);
 
   // Calculate total estimated cost from action items
   const totalEstimatedCost = result.data.action_items
     .filter((a) => a.resource_type !== "SELF")
     .reduce((sum, a) => sum + a.estimated_cost, 0);
 
+  const todosCount = result.data.action_items.length;
+  const tokens = (result.operation.native_tokens_prompt ?? 0) + (result.operation.native_tokens_completion ?? 0);
+
+  logger.info(ctx, `operation=planning_agent job_id=${state.job_id} todos_count=${todosCount} tokens=${tokens} estimated_cost=${totalEstimatedCost.toFixed(2)}`);
+
   // Build reasoning
   const reasoning = isRetry
     ? `Revised plan addressing: ${state.plan_verification_feedback?.join(", ")}`
-    : `Created plan with ${result.data.action_items.length} action items, estimated cost: $${totalEstimatedCost.toFixed(2)}`;
+    : `Created plan with ${todosCount} action items, estimated cost: $${totalEstimatedCost.toFixed(2)}`;
 
   return {
     plan: result.data,
@@ -476,14 +499,11 @@ async function planningAgentNodeImpl(state: OrchestrationState): Promise<Partial
 }
 
 /**
- * Exported planning agent node with tracing
+ * Exported planning agent node (without tracing wrapper - tracing applied in graph.ts)
  */
-export const planningAgentNode = withTracing(
-  "planning",
-  planningAgentNodeImpl
-);
+export const planningAgentNode = planningAgentNodeImpl;
 
 /**
- * Re-export for direct use without tracing
+ * Re-export for direct use
  */
 export { planningAgentNodeImpl };

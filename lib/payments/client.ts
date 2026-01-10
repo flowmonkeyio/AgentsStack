@@ -6,6 +6,8 @@
  * @see /docs/designs/payments/TECH_DESIGN.md
  */
 
+import { RequestContext, createLogger } from "@/lib/logging";
+
 // TODO: Import from @coinbase/cdp-sdk when available
 // import { CoinbaseCDP } from '@coinbase/cdp-sdk';
 
@@ -19,6 +21,8 @@ import type {
 } from "./types";
 import { executePayment } from "./x402";
 import { validateAddress, getBalance as getWalletBalance } from "./wallet";
+
+const logger = createLogger("payments");
 
 /**
  * PaymentClient implementation that wraps the CDP and x402 SDKs.
@@ -40,20 +44,39 @@ class PaymentClientImpl implements PaymentClient {
   /**
    * Execute a payment transfer.
    *
+   * @param ctx - Request context for tracing
    * @param request - Payment request details
    * @returns Payment response with success status and tx_hash
    */
-  async pay(request: PaymentRequest): Promise<PaymentResponse> {
-    return executePayment(request);
+  async pay(ctx: RequestContext, request: PaymentRequest): Promise<PaymentResponse> {
+    logger.info(
+      ctx,
+      `operation=pay work_id=${request.work_id} agent_id=${request.agent_id} amount=${request.amount} status=started`
+    );
+    const result = await executePayment(ctx, request);
+    if (result.success) {
+      logger.info(
+        ctx,
+        `operation=pay work_id=${request.work_id} tx_hash=${result.tx_hash} status=success`
+      );
+    } else {
+      logger.error(
+        ctx,
+        `operation=pay work_id=${request.work_id} status=failed reason="${result.error}"`
+      );
+    }
+    return result;
   }
 
   /**
    * Check the status of a payment by transaction hash.
    *
+   * @param ctx - Request context for tracing
    * @param tx_hash - Blockchain transaction hash
    * @returns Current payment status
    */
-  async getPaymentStatus(tx_hash: string): Promise<PaymentStatus> {
+  async getPaymentStatus(ctx: RequestContext, tx_hash: string): Promise<PaymentStatus> {
+    logger.info(ctx, `operation=get_payment_status tx_hash=${tx_hash} status=started`);
     try {
       // TODO: Implement actual CDP SDK call
       // const status = await this.cdp.getTransactionStatus(tx_hash);
@@ -63,18 +86,24 @@ class PaymentClientImpl implements PaymentClient {
       // return "processing";
 
       // Placeholder: Return simulated status for development
-      console.warn(
-        `[client.ts] getPaymentStatus called for ${tx_hash} - using placeholder`
-      );
+      logger.warn(ctx, `operation=get_payment_status tx_hash=${tx_hash} status=placeholder`);
 
       // For development, return confirmed if hash looks valid
+      let result: PaymentStatus;
       if (tx_hash.startsWith("0x") && tx_hash.length === 66) {
-        return "confirmed";
+        result = "confirmed";
+      } else {
+        result = "pending";
       }
-      return "pending";
+      logger.info(ctx, `operation=get_payment_status tx_hash=${tx_hash} result=${result} status=completed`);
+      return result;
     } catch (error: unknown) {
       // Transaction not found or network error
-      console.error("[client.ts] getPaymentStatus error:", error);
+      logger.error(
+        ctx,
+        `operation=get_payment_status tx_hash=${tx_hash} status=error`,
+        error instanceof Error ? error : undefined
+      );
       return "pending";
     }
   }
@@ -82,10 +111,12 @@ class PaymentClientImpl implements PaymentClient {
   /**
    * Get the USDC balance for a wallet address.
    *
+   * @param ctx - Request context for tracing
    * @param address - Wallet address
    * @returns Balance in USDC
    */
-  async getBalance(address: string): Promise<number> {
+  async getBalance(ctx: RequestContext, address: string): Promise<number> {
+    logger.info(ctx, `operation=client_get_balance address=${address} status=started`);
     // TODO: Implement actual CDP SDK call
     // const balance = await this.cdp.getBalance({
     //   address,
@@ -94,26 +125,33 @@ class PaymentClientImpl implements PaymentClient {
     // });
     // return balance.amount;
 
-    return getWalletBalance(address, this.config.network);
+    const balance = await getWalletBalance(ctx, address, this.config.network);
+    logger.info(ctx, `operation=client_get_balance address=${address} balance=${balance} status=completed`);
+    return balance;
   }
 
   /**
    * Validate an Ethereum wallet address.
    *
+   * @param ctx - Request context for tracing
    * @param address - Address to validate
    * @returns True if valid
    */
-  validateAddress(address: string): boolean {
-    return validateAddress(address);
+  validateAddress(ctx: RequestContext, address: string): boolean {
+    const isValid = validateAddress(ctx, address);
+    logger.debug(ctx, `operation=client_validate_address address=${address} valid=${isValid}`);
+    return isValid;
   }
 
   /**
    * Create an embedded wallet for a user.
    *
+   * @param ctx - Request context for tracing
    * @param user_id - User ID to create wallet for
    * @returns Created user wallet
    */
-  async createEmbeddedWallet(user_id: string): Promise<UserWallet> {
+  async createEmbeddedWallet(ctx: RequestContext, user_id: string): Promise<UserWallet> {
+    logger.info(ctx, `operation=create_embedded_wallet user_id=${user_id} status=started`);
     // TODO: Implement actual CDP SDK call
     // const wallet = await this.cdp.createEmbeddedWallet({
     //   userId: user_id,
@@ -127,30 +165,37 @@ class PaymentClientImpl implements PaymentClient {
     // };
 
     // Placeholder: Return simulated wallet for development
-    console.warn(
-      `[client.ts] createEmbeddedWallet called for user ${user_id} - using placeholder`
-    );
+    logger.warn(ctx, `operation=create_embedded_wallet user_id=${user_id} status=placeholder`);
 
     // Generate a simulated wallet address
     const simulatedAddress = `0x${generateSimulatedAddress()}`;
     const simulatedWalletId = `wallet_${user_id}_${Date.now()}`;
 
-    return {
+    const wallet: UserWallet = {
       type: "embedded",
       cdp_wallet_id: simulatedWalletId,
       address: simulatedAddress,
       verified: true, // CDP wallets are auto-verified
     };
+
+    logger.info(
+      ctx,
+      `operation=create_embedded_wallet user_id=${user_id} wallet_id=${simulatedWalletId} address=${simulatedAddress} status=completed`
+    );
+
+    return wallet;
   }
 }
 
 /**
  * Create a new PaymentClient instance.
  *
+ * @param ctx - Request context for tracing
  * @param config - Payment client configuration
  * @returns Configured PaymentClient
  */
-export function createPaymentClient(config: PaymentClientConfig): PaymentClient {
+export function createPaymentClient(ctx: RequestContext, config: PaymentClientConfig): PaymentClient {
+  logger.info(ctx, `operation=create_payment_client network=${config.network} status=created`);
   return new PaymentClientImpl(config);
 }
 
@@ -169,25 +214,26 @@ let defaultClient: PaymentClient | null = null;
  * - CDP_API_SECRET
  * - CDP_NETWORK
  *
+ * @param ctx - Request context for tracing
  * @returns Default PaymentClient instance
  */
-export function getPaymentClient(): PaymentClient {
+export function getPaymentClient(ctx: RequestContext): PaymentClient {
   if (!defaultClient) {
     const cdpApiKey = process.env.CDP_API_KEY;
     const cdpApiSecret = process.env.CDP_API_SECRET;
     const cdpNetwork = process.env.CDP_NETWORK as "base-mainnet" | "base-sepolia";
 
     if (!cdpApiKey || !cdpApiSecret) {
-      console.warn(
-        "[client.ts] CDP_API_KEY or CDP_API_SECRET not configured - using placeholder mode"
-      );
+      logger.warn(ctx, "operation=get_payment_client status=placeholder_mode reason=missing_credentials");
     }
 
-    defaultClient = createPaymentClient({
+    defaultClient = createPaymentClient(ctx, {
       cdpApiKey: cdpApiKey || "",
       cdpApiSecret: cdpApiSecret || "",
       network: cdpNetwork || "base-sepolia",
     });
+
+    logger.info(ctx, `operation=get_payment_client network=${cdpNetwork || "base-sepolia"} status=initialized`);
   }
   return defaultClient;
 }
@@ -196,17 +242,22 @@ export function getPaymentClient(): PaymentClient {
  * Set the default PaymentClient instance.
  * Useful for testing - allows injecting mock client.
  *
+ * @param ctx - Request context for tracing
  * @param client - Client to set as default
  */
-export function setPaymentClient(client: PaymentClient): void {
+export function setPaymentClient(ctx: RequestContext, client: PaymentClient): void {
+  logger.info(ctx, "operation=set_payment_client status=set");
   defaultClient = client;
 }
 
 /**
  * Reset the default PaymentClient instance.
  * Useful for testing - clears the singleton.
+ *
+ * @param ctx - Request context for tracing
  */
-export function resetPaymentClient(): void {
+export function resetPaymentClient(ctx: RequestContext): void {
+  logger.info(ctx, "operation=reset_payment_client status=reset");
   defaultClient = null;
 }
 

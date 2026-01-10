@@ -7,12 +7,16 @@
  * @see /docs/designs/orchestration/integrations/TECH_DESIGN.md
  */
 
+import type { RequestContext } from "@/lib/logging";
+import { createLogger } from "@/lib/logging";
 import type { GalileoClient } from "@/lib/galileo";
 import type { DatabaseClient } from "@/lib/db/database-client";
 import type { IWorkLifecycle } from "@/lib/orchestration/work-lifecycle";
 import type { WorkItem } from "@/types";
 import type { VerificationResult, IntegrationEvent } from "./types";
 import { IntegrationError } from "./types";
+
+const logger = createLogger("integrations");
 
 // =============================================================================
 // SCORE THRESHOLDS
@@ -91,20 +95,25 @@ export interface VerificationDependencies {
  * 5. Transition based on decision (pass/retry/reject)
  * 6. Emit appropriate event
  *
+ * @param ctx - Request context for tracing
  * @param work_id - ID of the work item to verify
  * @param deps - Required dependencies
  * @returns Verification result
  * @throws IntegrationError if Galileo call fails
  */
 export async function verifyWork(
+  ctx: RequestContext,
   work_id: string,
   deps: VerificationDependencies
 ): Promise<VerificationResult> {
   const { galileo, db, lifecycle, emitEvent } = deps;
 
+  logger.debug(ctx, `operation=verify_work_start work_id=${work_id}`);
+
   // Fetch work item
-  const work = await db.getWorkItem(work_id);
+  const work = await db.getWorkItem(ctx, work_id);
   if (!work) {
+    logger.error(ctx, `operation=verify_work work_id=${work_id} error=work_not_found`);
     throw new IntegrationError(
       `Work item not found: ${work_id}`,
       "galileo",
@@ -115,6 +124,7 @@ export async function verifyWork(
 
   // Validate work has output
   if (!work.output || !work.output.content) {
+    logger.error(ctx, `operation=verify_work work_id=${work_id} error=no_output status=${work.status}`);
     throw new IntegrationError(
       `Work item has no output: ${work_id}`,
       "galileo",
@@ -140,6 +150,7 @@ export async function verifyWork(
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
+    logger.error(ctx, `operation=verify_work work_id=${work_id} error=galileo_failed`, error instanceof Error ? error : undefined);
     throw new IntegrationError(
       `Galileo verification failed: ${message}`,
       "galileo",
@@ -150,6 +161,8 @@ export async function verifyWork(
 
   // Determine decision based on score
   const decision = getVerificationDecision(galileoResponse.score, work.attempt);
+
+  logger.info(ctx, `operation=verify_work work_id=${work_id} score=${galileoResponse.score.toFixed(2)} decision=${decision}`);
 
   // Build verification payload for transitions
   const verificationPayload = {
@@ -177,6 +190,8 @@ export async function verifyWork(
     };
     await lifecycle.transition(work_id, "verification_retry", retryPayload);
 
+    logger.info(ctx, `operation=verify_work_retry work_id=${work_id} attempt=${work.attempt + 1} issues=${galileoResponse.issues.length}`);
+
     emitEvent({
       type: "work:retry",
       work_id,
@@ -187,6 +202,8 @@ export async function verifyWork(
   } else {
     // reject
     await lifecycle.transition(work_id, "verification_reject", verificationPayload);
+
+    logger.warn(ctx, `operation=verify_work_rejected work_id=${work_id} score=${galileoResponse.score.toFixed(2)}`);
 
     emitEvent({
       type: "work:failed",

@@ -7,11 +7,14 @@
  * @see /docs/designs/external-agents/TECH_DESIGN.md
  */
 
+import { RequestContext, createLogger } from '@/lib/logging';
 import type {
   AgentExecuteRequest,
   AgentExecuteResponseSync,
   AgentRegistration,
 } from '../types';
+
+const logger = createLogger('external-agents');
 
 export const contentStrategistConfig: AgentRegistration = {
   name: 'ContentStrategist',
@@ -54,12 +57,15 @@ export class ContentStrategistAgent {
     this.anthropicApiKey = anthropicApiKey;
   }
 
-  async execute(request: AgentExecuteRequest): Promise<AgentExecuteResponseSync> {
+  async execute(ctx: RequestContext, request: AgentExecuteRequest): Promise<AgentExecuteResponseSync> {
     const startTime = Date.now();
+
+    logger.info(ctx, `operation=execute agent_id=ContentStrategist request_id=${request.request_id} mode=sync`);
 
     // Build user prompt (handle retries)
     let userPrompt = request.prompt;
     if (request.adjustment?.is_retry) {
+      logger.debug(ctx, `operation=execute agent_id=ContentStrategist request_id=${request.request_id} is_retry=true attempt=${request.adjustment.attempt}`);
       userPrompt = `Previous attempt had issues:
 ${request.adjustment.issues.map(i => `- ${i.criterion}: ${i.detail}`).join('\n')}
 
@@ -86,7 +92,9 @@ ${request.prompt}`;
     });
 
     if (!response.ok) {
-      throw new Error(`Anthropic API error: ${response.status}`);
+      const error = new Error(`Anthropic API error: ${response.status}`);
+      logger.error(ctx, `operation=execute_failed agent_id=ContentStrategist request_id=${request.request_id} error_code=ANTHROPIC_API_ERROR`, error);
+      throw error;
     }
 
     const data: AnthropicResponse = await response.json();
@@ -106,6 +114,9 @@ ${request.prompt}`;
     const outputTokens = data.usage.output_tokens;
     const totalCost = (inputTokens * 0.003 + outputTokens * 0.015) / 1000;
 
+    const durationMs = Date.now() - startTime;
+    logger.debug(ctx, `operation=execute_complete agent_id=ContentStrategist request_id=${request.request_id} duration_ms=${durationMs} input_tokens=${inputTokens} output_tokens=${outputTokens}`);
+
     return {
       status: 'completed',
       output,
@@ -118,7 +129,7 @@ ${request.prompt}`;
           total_cost: totalCost,
         }],
       },
-      processing_time_ms: Date.now() - startTime,
+      processing_time_ms: durationMs,
     };
   }
 }

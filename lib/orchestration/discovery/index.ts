@@ -6,6 +6,9 @@
  * @see /docs/designs/orchestration/discovery/TECH_DESIGN.md
  */
 
+// Re-export RequestContext for convenience
+export type { RequestContext } from "@/lib/logging";
+
 // =============================================================================
 // TYPES
 // =============================================================================

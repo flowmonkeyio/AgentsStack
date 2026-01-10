@@ -7,6 +7,8 @@
  * @see /docs/designs/orchestration/integrations/TECH_DESIGN.md
  */
 
+import type { RequestContext } from "@/lib/logging";
+import { createLogger } from "@/lib/logging";
 import type { PaymentClient } from "@/lib/payments";
 import type { DatabaseClient } from "@/lib/db/database-client";
 import type { IWorkLifecycle } from "@/lib/orchestration/work-lifecycle";
@@ -14,6 +16,8 @@ import type { WorkItem } from "@/types";
 import type { PaymentResult, IntegrationEvent } from "./types";
 import { IntegrationError } from "./types";
 import { sleep } from "@/lib/utils";
+
+const logger = createLogger("integrations");
 
 // =============================================================================
 // CONSTANTS
@@ -58,20 +62,25 @@ export interface PaymentDependencies {
  * 5. Transition based on result (confirmed/failed)
  * 6. Emit appropriate event
  *
+ * @param ctx - Request context for tracing
  * @param work_id - ID of the work item to pay for
  * @param deps - Required dependencies
  * @returns Payment result
  * @throws IntegrationError if data is missing or payment fails fatally
  */
 export async function payForWork(
+  ctx: RequestContext,
   work_id: string,
   deps: PaymentDependencies
 ): Promise<PaymentResult> {
   const { payments, db, lifecycle, emitEvent } = deps;
 
+  logger.debug(ctx, `operation=pay_for_work_start work_id=${work_id}`);
+
   // Fetch work item
-  const work = await db.getWorkItem(work_id);
+  const work = await db.getWorkItem(ctx, work_id);
   if (!work) {
+    logger.error(ctx, `operation=pay_for_work work_id=${work_id} error=work_not_found`);
     throw new IntegrationError(
       `Work item not found: ${work_id}`,
       "payments",
@@ -82,6 +91,7 @@ export async function payForWork(
 
   // Validate work is in verified state
   if (work.status !== "verified") {
+    logger.error(ctx, `operation=pay_for_work work_id=${work_id} error=invalid_status status=${work.status}`);
     throw new IntegrationError(
       `Work item not in verified state: ${work.status}`,
       "payments",
@@ -91,8 +101,9 @@ export async function payForWork(
   }
 
   // Fetch job for user info
-  const job = await db.getJob(work.job_id);
+  const job = await db.getJob(ctx, work.job_id);
   if (!job) {
+    logger.error(ctx, `operation=pay_for_work work_id=${work_id} error=job_not_found job_id=${work.job_id}`);
     throw new IntegrationError(
       `Job not found: ${work.job_id}`,
       "payments",
@@ -103,6 +114,7 @@ export async function payForWork(
 
   // Fetch agent for wallet address
   if (!work.agent) {
+    logger.error(ctx, `operation=pay_for_work work_id=${work_id} error=no_agent`);
     throw new IntegrationError(
       `Work item has no agent assigned`,
       "payments",
@@ -111,8 +123,9 @@ export async function payForWork(
     );
   }
 
-  const agent = await db.getAgent(work.agent.agent_id);
+  const agent = await db.getAgent(ctx, work.agent.agent_id);
   if (!agent) {
+    logger.error(ctx, `operation=pay_for_work work_id=${work_id} error=agent_not_found agent_id=${work.agent.agent_id}`);
     throw new IntegrationError(
       `Agent not found: ${work.agent.agent_id}`,
       "payments",
@@ -137,12 +150,15 @@ export async function payForWork(
     reason: `Work completed, score ${work.verification?.score ?? "N/A"}`,
   };
 
+  logger.debug(ctx, `operation=pay_for_work work_id=${work_id} amount=${paymentRequest.amount} agent_id=${agent.agent_id}`);
+
   // Execute payment
   let paymentResponse: PaymentResult;
   try {
     paymentResponse = await payments.pay(paymentRequest);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
+    logger.error(ctx, `operation=pay_for_work work_id=${work_id} error=payment_exception`, error instanceof Error ? error : undefined);
     // Transition to failed state
     await lifecycle.transition(work_id, "payment_failed");
     return {
@@ -159,6 +175,8 @@ export async function payForWork(
       tx_hash: paymentResponse.tx_hash!,
     });
 
+    logger.info(ctx, `operation=pay_for_work work_id=${work_id} amount=${paymentRequest.amount} status=confirmed tx_hash=${paymentResponse.tx_hash}`);
+
     emitEvent({
       type: "work:payment_confirmed",
       work_id,
@@ -170,6 +188,8 @@ export async function payForWork(
   }
 
   // Payment failed
+  logger.warn(ctx, `operation=pay_for_work work_id=${work_id} status=failed retry_suggested=${paymentResponse.retry_suggested}`);
+
   if (paymentResponse.retry_suggested) {
     await lifecycle.transition(work_id, "payment_failed");
     // Will be retried by retry logic
@@ -187,18 +207,23 @@ export async function payForWork(
 /**
  * Retry a failed payment with exponential backoff.
  *
+ * @param ctx - Request context for tracing
  * @param work_id - ID of the work item
  * @param deps - Required dependencies
  */
 export async function retryPayment(
+  ctx: RequestContext,
   work_id: string,
   deps: PaymentDependencies
 ): Promise<void> {
   const { db, lifecycle } = deps;
 
+  logger.debug(ctx, `operation=retry_payment_start work_id=${work_id}`);
+
   // Fetch work item to get retry count
-  const work = await db.getWorkItem(work_id);
+  const work = await db.getWorkItem(ctx, work_id);
   if (!work) {
+    logger.error(ctx, `operation=retry_payment work_id=${work_id} error=work_not_found`);
     throw new IntegrationError(
       `Work item not found: ${work_id}`,
       "payments",
@@ -211,19 +236,21 @@ export async function retryPayment(
 
   // Check if max retries exceeded
   if (retryCount >= MAX_PAYMENT_RETRIES) {
+    logger.warn(ctx, `operation=retry_payment work_id=${work_id} status=max_retries_exceeded retry_count=${retryCount}`);
     await lifecycle.transition(work_id, "max_payment_retries");
     return;
   }
 
   // Exponential backoff: 5s, 10s, 20s
   const backoffMs = BASE_RETRY_DELAY_MS * Math.pow(2, retryCount);
+  logger.info(ctx, `operation=retry_payment work_id=${work_id} retry_count=${retryCount} backoff_ms=${backoffMs}`);
   await sleep(backoffMs);
 
   // Transition back to paying state
   await lifecycle.transition(work_id, "retry_payment");
 
   // Retry payment
-  await payForWork(work_id, deps);
+  await payForWork(ctx, work_id, deps);
 }
 
 // =============================================================================
@@ -234,17 +261,22 @@ export async function retryPayment(
  * Check the on-chain status of a payment.
  * Used during recovery to verify pending payments.
  *
+ * @param ctx - Request context for tracing
  * @param work_id - ID of the work item
  * @param deps - Required dependencies
  */
 export async function checkPaymentStatus(
+  ctx: RequestContext,
   work_id: string,
   deps: PaymentDependencies
 ): Promise<void> {
   const { payments, db, lifecycle, emitEvent } = deps;
 
-  const work = await db.getWorkItem(work_id);
+  logger.debug(ctx, `operation=check_payment_status work_id=${work_id}`);
+
+  const work = await db.getWorkItem(ctx, work_id);
   if (!work) {
+    logger.error(ctx, `operation=check_payment_status work_id=${work_id} error=work_not_found`);
     throw new IntegrationError(
       `Work item not found: ${work_id}`,
       "payments",
@@ -255,12 +287,15 @@ export async function checkPaymentStatus(
 
   // If no transaction started, retry payment
   if (!work.payment?.tx_hash) {
-    await payForWork(work_id, deps);
+    logger.info(ctx, `operation=check_payment_status work_id=${work_id} action=restart_payment reason=no_tx_hash`);
+    await payForWork(ctx, work_id, deps);
     return;
   }
 
   // Check on-chain status
   const status = await payments.getPaymentStatus(work.payment.tx_hash);
+
+  logger.info(ctx, `operation=check_payment_status work_id=${work_id} tx_hash=${work.payment.tx_hash} status=${status}`);
 
   if (status === "confirmed") {
     await lifecycle.transition(work_id, "payment_confirmed", {
@@ -275,6 +310,7 @@ export async function checkPaymentStatus(
       tx_hash: work.payment.tx_hash,
     });
   } else if (status === "failed") {
+    logger.warn(ctx, `operation=check_payment_status work_id=${work_id} tx_hash=${work.payment.tx_hash} status=failed`);
     await lifecycle.transition(work_id, "payment_failed");
   }
   // If pending, wait for next check (no action needed)

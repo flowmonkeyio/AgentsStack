@@ -7,6 +7,8 @@
  * @see /docs/designs/galileo/TECH_DESIGN.md
  */
 
+import type { RequestContext } from "@/lib/logging";
+
 // =============================================================================
 // VERIFICATION TYPES
 // =============================================================================
@@ -198,29 +200,33 @@ export interface GalileoConfig {
 export interface GalileoClient {
   /**
    * Verify agent output against instructions.
+   * @param ctx - Request context for tracing
    * @param request - Verification request
    * @returns Verification response with score and feedback
    */
-  verify(request: VerifyRequest): Promise<VerifyResponse>;
+  verify(ctx: RequestContext, request: VerifyRequest): Promise<VerifyResponse>;
 
   /**
    * Record a trace event for observability.
+   * @param ctx - Request context for tracing
    * @param event - Trace event to record
    */
-  trace(event: TraceEvent): Promise<void>;
+  trace(ctx: RequestContext, event: TraceEvent): Promise<void>;
 
   /**
    * Record multiple trace events at once (for efficiency).
+   * @param ctx - Request context for tracing
    * @param events - Array of trace events
    */
-  traceBatch(events: TraceEvent[]): Promise<void>;
+  traceBatch(ctx: RequestContext, events: TraceEvent[]): Promise<void>;
 
   /**
    * Get quality metrics for a job.
+   * @param ctx - Request context for tracing
    * @param job_id - Job ID to get metrics for
    * @returns Quality metrics for the job
    */
-  getJobMetrics(job_id: string): Promise<QualityMetrics>;
+  getJobMetrics(ctx: RequestContext, job_id: string): Promise<QualityMetrics>;
 }
 
 // =============================================================================

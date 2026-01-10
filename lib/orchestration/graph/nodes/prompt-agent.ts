@@ -11,7 +11,11 @@ import OpenAI from "openai";
 import { nanoid } from "nanoid";
 import type { LLMOperation, ActionItem, PromptTemplate, WorkItem } from "@/types";
 import { withTracing } from "@/lib/galileo";
+import type { RequestContext } from "@/lib/logging";
+import { createLogger } from "@/lib/logging";
 import type { OrchestrationState, ContextRef, RetryContext as TypesRetryContext } from "../types";
+
+const logger = createLogger("graph");
 
 // =============================================================================
 // OPENROUTER CLIENT
@@ -216,46 +220,61 @@ function substituteTemplate(
  * Invoke prompt agent LLM for intelligent template filling
  */
 async function invokePromptLLM(
+  ctx: RequestContext,
   input: PromptAgentInput
 ): Promise<LLMInvokeResult<PromptAgentOutput>> {
   const startTime = Date.now();
+  const actionItemId = input.action_item.id;
 
-  const userContent = formatPromptInput(input);
+  logger.info(ctx, `operation=invoke_prompt_llm model=${PROMPT_AGENT_MODEL} action_item_id=${actionItemId} is_retry=${input.is_retry} status=started`);
 
-  const response = await openrouter.chat.completions.create({
-    model: PROMPT_AGENT_MODEL,
-    messages: [
-      { role: "system", content: PROMPT_AGENT_SYSTEM_PROMPT },
-      { role: "user", content: userContent },
-    ],
-    temperature: 0.3, // Low temperature for consistent prompt generation
-    max_tokens: 2048,
-    response_format: { type: "json_object" },
-  });
+  try {
+    const userContent = formatPromptInput(input);
 
-  const usage = response.usage;
-  const content = response.choices[0]?.message?.content ?? "{}";
-  const data = JSON.parse(content) as PromptAgentOutput;
-
-  return {
-    data,
-    operation: {
-      operation_id: generateOperationId(),
-      timestamp: new Date(),
-      operation_type: "prompt_agent",
+    const response = await openrouter.chat.completions.create({
       model: PROMPT_AGENT_MODEL,
-      native_tokens_prompt: usage?.prompt_tokens,
-      native_tokens_completion: usage?.completion_tokens,
-      total_cost: calculateCostFromUsage(PROMPT_AGENT_MODEL, usage ?? {}),
-      metadata: {
-        duration_ms: Date.now() - startTime,
-        finish_reason: response.choices[0]?.finish_reason,
-        template_id: input.template.template_id,
-        is_retry: input.is_retry,
-        action_item_id: input.action_item.id,
+      messages: [
+        { role: "system", content: PROMPT_AGENT_SYSTEM_PROMPT },
+        { role: "user", content: userContent },
+      ],
+      temperature: 0.3, // Low temperature for consistent prompt generation
+      max_tokens: 2048,
+      response_format: { type: "json_object" },
+    });
+
+    const usage = response.usage;
+    const content = response.choices[0]?.message?.content ?? "{}";
+    const data = JSON.parse(content) as PromptAgentOutput;
+    const durationMs = Date.now() - startTime;
+    const inputTokens = usage?.prompt_tokens ?? 0;
+    const outputTokens = usage?.completion_tokens ?? 0;
+
+    logger.info(ctx, `operation=invoke_prompt_llm model=${PROMPT_AGENT_MODEL} action_item_id=${actionItemId} input_tokens=${inputTokens} output_tokens=${outputTokens} duration_ms=${durationMs} status=completed`);
+
+    return {
+      data,
+      operation: {
+        operation_id: generateOperationId(),
+        timestamp: new Date(),
+        operation_type: "prompt_agent",
+        model: PROMPT_AGENT_MODEL,
+        native_tokens_prompt: usage?.prompt_tokens,
+        native_tokens_completion: usage?.completion_tokens,
+        total_cost: calculateCostFromUsage(PROMPT_AGENT_MODEL, usage ?? {}),
+        metadata: {
+          duration_ms: durationMs,
+          finish_reason: response.choices[0]?.finish_reason,
+          template_id: input.template.template_id,
+          is_retry: input.is_retry,
+          action_item_id: input.action_item.id,
+        },
       },
-    },
-  };
+    };
+  } catch (error) {
+    const durationMs = Date.now() - startTime;
+    logger.error(ctx, `operation=invoke_prompt_llm model=${PROMPT_AGENT_MODEL} action_item_id=${actionItemId} duration_ms=${durationMs} status=failed`, error);
+    throw error;
+  }
 }
 
 /**
@@ -312,11 +331,16 @@ function formatPromptInput(input: PromptAgentInput): string {
  * Generates final prompt from template + context.
  * Note: This node expects current_work_items to have at least one work item
  * that needs prompt generation.
+ *
+ * @param ctx - Request context for logging
+ * @param state - Current graph state
+ * @returns Partial state update
  */
-async function promptAgentNodeImpl(state: OrchestrationState): Promise<Partial<OrchestrationState>> {
+async function promptAgentNodeImpl(ctx: RequestContext, state: OrchestrationState): Promise<Partial<OrchestrationState>> {
   // Get current work item that needs prompt generation
   const currentWork = state.current_work_items.find((w) => w.status === "pending");
   if (!currentWork || !state.plan) {
+    logger.warn(ctx, `operation=prompt_agent job_id=${state.job_id} result=fail reason=no_pending_work`);
     return {
       error: "No pending work item to generate prompt for",
       reasoning: "No pending work item in state",
@@ -324,11 +348,14 @@ async function promptAgentNodeImpl(state: OrchestrationState): Promise<Partial<O
     };
   }
 
+  logger.info(ctx, `operation=prompt_agent work_id=${currentWork.work_id} job_id=${state.job_id}`);
+
   // Find corresponding action item
   const actionItem = state.plan.action_items.find(
-    (a) => a.id === currentWork.action.id
+    (a) => a.id === currentWork.action_item_id
   );
   if (!actionItem) {
+    logger.warn(ctx, `operation=prompt_agent work_id=${currentWork.work_id} result=fail reason=action_item_not_found`);
     return {
       error: "Action item not found in plan",
       reasoning: "Could not find action item for work",
@@ -340,6 +367,8 @@ async function promptAgentNodeImpl(state: OrchestrationState): Promise<Partial<O
   const template = state.available_templates.find(
     (t) => t.template_id === actionItem.template_id
   ) ?? createDefaultTemplate(actionItem.template_id);
+
+  logger.debug(ctx, `operation=prompt_agent work_id=${currentWork.work_id} template_id=${template.template_id}`);
 
   // Build prompt input
   const promptInput: PromptAgentInput = {
@@ -355,7 +384,10 @@ async function promptAgentNodeImpl(state: OrchestrationState): Promise<Partial<O
   };
 
   // Generate prompt via LLM
-  const result = await invokePromptLLM(promptInput);
+  const result = await invokePromptLLM(ctx, promptInput);
+
+  const tokens = (result.operation.native_tokens_prompt ?? 0) + (result.operation.native_tokens_completion ?? 0);
+  logger.info(ctx, `operation=prompt_agent work_id=${currentWork.work_id} template_id=${template.template_id} tokens=${tokens}`);
 
   // Build reasoning
   const reasoning = `Generated prompt using template ${template.template_id}`;
@@ -414,12 +446,12 @@ Please provide a revised output that addresses all issues above.`,
 }
 
 /**
- * Exported prompt agent node with tracing
+ * Exported prompt agent node (without tracing wrapper - tracing applied in graph.ts)
  */
-export const promptAgentNode = withTracing("prompt", promptAgentNodeImpl);
+export const promptAgentNode = promptAgentNodeImpl;
 
 /**
- * Re-export for direct use without tracing
+ * Re-export for direct use
  */
 export { promptAgentNodeImpl };
 

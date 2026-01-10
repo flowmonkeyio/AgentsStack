@@ -7,6 +7,8 @@
  * @see /docs/designs/orchestration/integrations/TECH_DESIGN.md
  */
 
+import type { RequestContext } from "@/lib/logging";
+import { createLogger, createContext } from "@/lib/logging";
 import type { DatabaseClient } from "@/lib/db/database-client";
 import type { ExtendedDatabaseClient } from "@/lib/orchestration/work-lifecycle";
 import type { IWorkLifecycle } from "@/lib/orchestration/work-lifecycle";
@@ -19,6 +21,8 @@ import { verifyWork } from "./galileo";
 import { payForWork, checkPaymentStatus } from "./payments";
 import { DEFAULT_POLL_MANAGER_CONFIG } from "./types";
 import type { PollManagerConfig } from "./types";
+
+const logger = createLogger("integrations");
 
 // =============================================================================
 // POLL MANAGER
@@ -46,43 +50,54 @@ const pollManagerState: PollManagerState = {
  * Run a single poll cycle.
  * Finds and polls all items that need polling.
  *
+ * @param ctx - Request context for tracing
  * @param deps - Dispatch dependencies
  */
-async function runPollCycle(deps: DispatchDependencies): Promise<void> {
+async function runPollCycle(ctx: RequestContext, deps: DispatchDependencies): Promise<void> {
   const { db, lifecycle } = deps;
 
+  logger.debug(ctx, `operation=poll_cycle_start`);
+
   // Find items needing poll
-  const needsPoll = await db.getItemsNeedingPoll();
+  const needsPoll = await db.getItemsNeedingPoll(ctx);
+
+  logger.debug(ctx, `operation=poll_cycle items_needing_poll=${needsPoll.length}`);
 
   for (const work of needsPoll) {
     try {
-      await pollAgent(work.work_id, deps);
+      await pollAgent(ctx, work.work_id, deps);
     } catch (error) {
-      console.error(`[PollManager] Poll failed for ${work.work_id}:`, error);
+      logger.error(ctx, `operation=poll_cycle_poll_failed work_id=${work.work_id}`, error instanceof Error ? error : undefined);
     }
   }
 
   // Find stale items (timeout exceeded)
-  const staleItems = await db.getStaleItems();
+  const staleItems = await db.getStaleItems(ctx);
+
+  logger.debug(ctx, `operation=poll_cycle stale_items=${staleItems.length}`);
 
   for (const work of staleItems) {
     try {
-      await handleStaleWork(work, deps, lifecycle);
+      await handleStaleWork(ctx, work, deps, lifecycle);
     } catch (error) {
-      console.error(`[PollManager] Stale handling failed for ${work.work_id}:`, error);
+      logger.error(ctx, `operation=poll_cycle_stale_failed work_id=${work.work_id}`, error instanceof Error ? error : undefined);
     }
   }
+
+  logger.debug(ctx, `operation=poll_cycle_complete`);
 }
 
 /**
  * Handle a stale work item (polling timeout exceeded).
  * Retries dispatch up to 3 times, then fails.
  *
+ * @param ctx - Request context for tracing
  * @param work - Stale work item
  * @param deps - Dispatch dependencies
  * @param lifecycle - Work lifecycle for state transitions
  */
 async function handleStaleWork(
+  ctx: RequestContext,
   work: WorkItem,
   deps: DispatchDependencies,
   lifecycle: IWorkLifecycle
@@ -91,13 +106,16 @@ async function handleStaleWork(
   const staleRetryCount = work.retries.filter((r) => r.reason === "stale").length;
   const canRetry = staleRetryCount < 3;
 
+  logger.info(ctx, `operation=handle_stale work_id=${work.work_id} stale_retry_count=${staleRetryCount} can_retry=${canRetry}`);
+
   if (canRetry) {
     // Transition to stale, then retry dispatch
     await lifecycle.transition(work.work_id, "poll_timeout");
     await lifecycle.transition(work.work_id, "retry_dispatch");
-    await dispatchToAgent(work.work_id, deps);
+    await dispatchToAgent(ctx, work.work_id, deps);
   } else {
     // Max retries exceeded
+    logger.warn(ctx, `operation=handle_stale work_id=${work.work_id} status=max_retries_exceeded`);
     await lifecycle.transition(work.work_id, "max_stale_retries");
   }
 }
@@ -114,29 +132,35 @@ export function startPollManager(
   config: PollManagerConfig = DEFAULT_POLL_MANAGER_CONFIG
 ): void {
   if (pollManagerState.isRunning) {
-    console.warn("[PollManager] Already running");
+    const ctx = createContext();
+    logger.warn(ctx, `operation=start_poll_manager status=already_running`);
     return;
   }
 
   pollManagerState.isRunning = true;
   pollManagerState.intervalId = setInterval(
-    () => runPollCycle(deps),
+    () => {
+      const ctx = createContext();
+      runPollCycle(ctx, deps);
+    },
     config.pollIntervalMs
   );
 
-  console.log(`[PollManager] Started with ${config.pollIntervalMs}ms interval`);
+  const ctx = createContext();
+  logger.info(ctx, `operation=start_poll_manager interval_ms=${config.pollIntervalMs}`);
 }
 
 /**
  * Stop the poll manager background process.
  */
 export function stopPollManager(): void {
+  const ctx = createContext();
   if (pollManagerState.intervalId) {
     clearInterval(pollManagerState.intervalId);
     pollManagerState.intervalId = null;
   }
   pollManagerState.isRunning = false;
-  console.log("[PollManager] Stopped");
+  logger.info(ctx, `operation=stop_poll_manager`);
 }
 
 /**
@@ -170,49 +194,50 @@ export interface RecoveryDependencies {
  * Recover all in-flight work from active jobs.
  * Called on system startup to resume interrupted work.
  *
+ * @param ctx - Request context for tracing
  * @param deps - Recovery dependencies
  */
 export async function recoverInFlightWork(
+  ctx: RequestContext,
   deps: RecoveryDependencies
 ): Promise<void> {
   const { db, lifecycle } = deps;
 
-  console.log("[Recovery] Starting in-flight work recovery...");
+  logger.info(ctx, `operation=recover_in_flight_work status=starting`);
 
   // Find active jobs
-  const activeJobs = await findActiveJobs(db);
-  console.log(`[Recovery] Found ${activeJobs.length} active jobs`);
+  const activeJobs = await findActiveJobs(ctx, db);
+  logger.info(ctx, `operation=recover_in_flight_work active_jobs=${activeJobs.length}`);
 
   for (const job of activeJobs) {
-    const workItems = await db.getWorkItemsByJob(job.job_id);
-    console.log(
-      `[Recovery] Job ${job.job_id}: ${workItems.length} work items`
-    );
+    const workItems = await db.getWorkItemsByJob(ctx, job.job_id);
+    logger.info(ctx, `operation=recover_in_flight_work job_id=${job.job_id} work_items=${workItems.length}`);
 
     for (const work of workItems) {
       try {
-        await recoverWorkItem(work, deps);
+        await recoverWorkItem(ctx, work, deps);
       } catch (error) {
-        console.error(
-          `[Recovery] Failed to recover work ${work.work_id}:`,
-          error
-        );
+        logger.error(ctx, `operation=recover_work_item_failed work_id=${work.work_id}`, error instanceof Error ? error : undefined);
       }
     }
   }
 
-  console.log("[Recovery] In-flight work recovery complete");
+  logger.info(ctx, `operation=recover_in_flight_work status=complete`);
 }
 
 /**
  * Find all jobs that are in an active state.
  *
+ * @param ctx - Request context for tracing
  * @param db - Database client
  * @returns Array of active jobs
  */
 async function findActiveJobs(
+  ctx: RequestContext,
   db: DatabaseClient
 ): Promise<Array<{ job_id: string }>> {
+  logger.debug(ctx, "operation=find_active_jobs status=started");
+
   // Note: Would need a getJobsByStatus method on DatabaseClient
   // For now, this is a placeholder that returns an empty array
   // The actual implementation would query jobs with status in:
@@ -222,77 +247,79 @@ async function findActiveJobs(
   // A proper implementation would be:
   // return db.getJobsByStatus(["planning", "plan_verification", "executing"]);
 
-  console.warn(
-    "[Recovery] findActiveJobs requires getJobsByStatus method on DatabaseClient"
-  );
-  return [];
+  const jobs: Array<{ job_id: string }> = [];
+
+  logger.debug(ctx, `operation=find_active_jobs count=${jobs.length} status=completed`);
+  return jobs;
 }
 
 /**
  * Recover a single work item based on its current status.
  *
+ * @param ctx - Request context for tracing
  * @param work - Work item to recover
  * @param deps - Recovery dependencies
  */
 async function recoverWorkItem(
+  ctx: RequestContext,
   work: WorkItem,
   deps: RecoveryDependencies
 ): Promise<void> {
-  console.log(`[Recovery] Recovering work ${work.work_id} (status: ${work.status})`);
+  logger.info(ctx, `operation=recover_work_item work_id=${work.work_id} status=${work.status}`);
 
   switch (work.status) {
     case "dispatched":
     case "polling":
       // Resume polling
-      await pollAgent(work.work_id, deps.dispatch);
+      await pollAgent(ctx, work.work_id, deps.dispatch);
       break;
 
     case "prompting":
       // Restart prompting
-      await restartPrompting(work.work_id, deps);
+      await restartPrompting(ctx, work.work_id, deps);
       break;
 
     case "verifying":
       // Re-run verification
-      await verifyWork(work.work_id, deps.verification);
+      await verifyWork(ctx, work.work_id, deps.verification);
       break;
 
     case "paying":
     case "payment_retry":
       // Check payment status
-      await checkPaymentStatus(work.work_id, deps.payment);
+      await checkPaymentStatus(ctx, work.work_id, deps.payment);
       break;
 
     case "stale":
       // Handle stale - attempt re-dispatch
-      await handleStaleWork(work, deps.dispatch, deps.lifecycle);
+      await handleStaleWork(ctx, work, deps.dispatch, deps.lifecycle);
       break;
 
     default:
       // No recovery needed for: pending, ready, received, verified,
       // retry_pending, rejected, reassigning, completed, failed
-      console.log(
-        `[Recovery] No recovery action needed for status: ${work.status}`
-      );
+      logger.debug(ctx, `operation=recover_work_item work_id=${work.work_id} action=none status=${work.status}`);
   }
 }
 
 /**
  * Restart prompting for a work item that was interrupted during prompt generation.
  *
+ * @param ctx - Request context for tracing
  * @param work_id - Work item ID
  * @param deps - Recovery dependencies
  */
 async function restartPrompting(
+  ctx: RequestContext,
   work_id: string,
   deps: RecoveryDependencies
 ): Promise<void> {
   const { db } = deps;
 
   // Reset to ready status so it can be picked up by the execution loop
-  await db.updateWorkItemStatus(work_id, "ready");
+  await db.updateWorkItemStatus(ctx, work_id, "ready");
 
-  console.log(`[Recovery] Reset work ${work_id} to ready for re-prompting`);
+  logger.info(ctx, `operation=restart_prompting work_id=${work_id} action=reset_to_ready`);
 }
 
 // =============================================================================
@@ -384,17 +411,21 @@ export interface RecoveryHealthStatus {
 /**
  * Get recovery health status for monitoring.
  *
+ * @param ctx - Request context for tracing
  * @param db - Database client
  * @returns Health status
  */
 export async function getRecoveryHealthStatus(
+  ctx: RequestContext,
   db: DatabaseClient
 ): Promise<RecoveryHealthStatus> {
+  logger.debug(ctx, `operation=get_recovery_health_status`);
+
   // Note: This would benefit from more specialized database methods
   // For now, we use available methods
 
-  const needsPoll = await db.getItemsNeedingPoll();
-  const staleItems = await db.getStaleItems();
+  const needsPoll = await db.getItemsNeedingPoll(ctx);
+  const staleItems = await db.getStaleItems(ctx);
 
   const statusCounts: Record<string, number> = {};
 
@@ -402,10 +433,14 @@ export async function getRecoveryHealthStatus(
     statusCounts[item.status] = (statusCounts[item.status] ?? 0) + 1;
   }
 
-  return {
+  const status = {
     totalChecked: needsPoll.length + staleItems.length,
     needingRecovery: needsPoll.length + staleItems.length,
     statusCounts,
     pollManagerRunning: isPollManagerRunning(),
   };
+
+  logger.info(ctx, `operation=get_recovery_health_status total_checked=${status.totalChecked} needing_recovery=${status.needingRecovery} poll_manager_running=${status.pollManagerRunning}`);
+
+  return status;
 }

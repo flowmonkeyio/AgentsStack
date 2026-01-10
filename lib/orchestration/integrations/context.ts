@@ -7,11 +7,15 @@
  * @see /docs/designs/orchestration/integrations/TECH_DESIGN.md
  */
 
+import type { RequestContext } from "@/lib/logging";
+import { createLogger } from "@/lib/logging";
 import OpenAI from "openai";
 import { nanoid } from "nanoid";
 import type { DatabaseClient } from "@/lib/db/database-client";
 import type { ExtendedDatabaseClient } from "@/lib/orchestration/work-lifecycle";
 import type { WorkItem, ActionItem, LLMOperation } from "@/types";
+
+const logger = createLogger("integrations");
 import type {
   ContextRef,
   PreparedContext,
@@ -89,15 +93,18 @@ function generateOperationId(): string {
 /**
  * Get the context summary for a job.
  *
+ * @param ctx - Request context for tracing
  * @param job_id - Job ID
  * @param db - Database client
  * @returns Context summary string
  */
 export async function getContextSummary(
+  ctx: RequestContext,
   job_id: string,
   db: DatabaseClient
 ): Promise<string> {
-  const job = await db.getJob(job_id);
+  logger.debug(ctx, `operation=get_context_summary job_id=${job_id}`);
+  const job = await db.getJob(ctx, job_id);
   return job?.context_summary ?? "";
 }
 
@@ -105,39 +112,48 @@ export async function getContextSummary(
  * Get context references for all completed work items in a job.
  * Returns metadata only (title, description) - not full content.
  *
+ * @param ctx - Request context for tracing
  * @param job_id - Job ID
  * @param db - Database client
  * @returns Array of context references
  */
 export async function getContextRefs(
+  ctx: RequestContext,
   job_id: string,
   db: DatabaseClient
 ): Promise<ContextRef[]> {
-  const workItems = await db.getWorkItemsByJob(job_id);
+  logger.debug(ctx, `operation=get_context_refs job_id=${job_id}`);
+  const workItems = await db.getWorkItemsByJob(ctx, job_id);
   const completedItems = workItems.filter((w) => w.status === "completed");
 
-  return completedItems
+  const refs = completedItems
     .filter((work) => work.output !== null)
     .map((work) => ({
       work_id: work.work_id,
       title: work.output!.title,
       description: work.output!.description,
     }));
+
+  logger.debug(ctx, `operation=get_context_refs job_id=${job_id} refs_count=${refs.length}`);
+  return refs;
 }
 
 /**
  * Load the full content for a work item.
  * Use sparingly - only when agent needs specific content.
  *
+ * @param ctx - Request context for tracing
  * @param work_id - Work item ID
  * @param db - Database client
  * @returns Full content (heterogeneous)
  */
 export async function loadFullContent(
+  ctx: RequestContext,
   work_id: string,
   db: DatabaseClient
 ): Promise<unknown> {
-  const work = await db.getWorkItem(work_id);
+  logger.debug(ctx, `operation=load_full_content work_id=${work_id}`);
+  const work = await db.getWorkItem(ctx, work_id);
   return work?.output?.content ?? null;
 }
 
@@ -149,19 +165,23 @@ export async function loadFullContent(
  * Prepare context for prompt generation.
  * Loads summary, refs, and selectively loads dependency content.
  *
+ * @param ctx - Request context for tracing
  * @param job_id - Job ID
  * @param action_item - Action item being processed
  * @param db - Database client
  * @returns Prepared context with loaded dependencies
  */
 export async function prepareContextForPrompt(
+  ctx: RequestContext,
   job_id: string,
   action_item: ActionItem,
   db: DatabaseClient & ExtendedDatabaseClient
 ): Promise<PreparedContext> {
+  logger.debug(ctx, `operation=prepare_context job_id=${job_id} action_item_id=${action_item.id}`);
+
   // Get lightweight context (always available)
-  const summary = await getContextSummary(job_id, db);
-  const refs = await getContextRefs(job_id, db);
+  const summary = await getContextSummary(ctx, job_id, db);
+  const refs = await getContextRefs(ctx, job_id, db);
 
   // Determine what to load based on dependencies
   const loaded_content: Record<string, unknown> = {};
@@ -169,12 +189,15 @@ export async function prepareContextForPrompt(
   // Check if this is a synthesis task (depends on ALL)
   if (action_item.depends_on.includes(-1)) {
     // Special case: -1 means "ALL" - load everything
+    logger.debug(ctx, `operation=prepare_context job_id=${job_id} mode=load_all`);
     for (const ref of refs) {
-      loaded_content[ref.work_id] = await loadFullContent(ref.work_id, db);
+      loaded_content[ref.work_id] = await loadFullContent(ctx, ref.work_id, db);
     }
   } else if (action_item.depends_on.length > 0) {
     // Standard task: load only dependencies
+    logger.debug(ctx, `operation=prepare_context job_id=${job_id} mode=load_dependencies deps_count=${action_item.depends_on.length}`);
     const dependencyWorks = await db.getWorkItemsByActionItemIds(
+      ctx,
       job_id,
       action_item.depends_on
     );
@@ -187,6 +210,7 @@ export async function prepareContextForPrompt(
   }
   // No dependencies = no content loaded
 
+  logger.info(ctx, `operation=prepare_context job_id=${job_id} action_item_id=${action_item.id} loaded_count=${Object.keys(loaded_content).length}`);
   return { summary, refs, loaded_content };
 }
 
@@ -194,6 +218,7 @@ export async function prepareContextForPrompt(
  * Load context for a task based on loading rules.
  * More general version that accepts loading mode explicitly.
  *
+ * @param ctx - Request context for tracing
  * @param job_id - Job ID
  * @param loadMode - What to load: "none", "dependencies_only", or "all"
  * @param dependsOn - Array of action item IDs this task depends on
@@ -201,23 +226,27 @@ export async function prepareContextForPrompt(
  * @returns Prepared context
  */
 export async function loadContextForTask(
+  ctx: RequestContext,
   job_id: string,
   loadMode: "none" | "dependencies_only" | "all",
   dependsOn: number[],
   db: DatabaseClient & ExtendedDatabaseClient
 ): Promise<PreparedContext> {
-  const summary = await getContextSummary(job_id, db);
-  const refs = await getContextRefs(job_id, db);
+  logger.debug(ctx, `operation=load_context_for_task job_id=${job_id} mode=${loadMode}`);
+
+  const summary = await getContextSummary(ctx, job_id, db);
+  const refs = await getContextRefs(ctx, job_id, db);
   const loaded_content: Record<string, unknown> = {};
 
   if (loadMode === "all") {
     // Load everything
     for (const ref of refs) {
-      loaded_content[ref.work_id] = await loadFullContent(ref.work_id, db);
+      loaded_content[ref.work_id] = await loadFullContent(ctx, ref.work_id, db);
     }
   } else if (loadMode === "dependencies_only" && dependsOn.length > 0) {
     // Load only dependencies
     const dependencyWorks = await db.getWorkItemsByActionItemIds(
+      ctx,
       job_id,
       dependsOn
     );
@@ -230,6 +259,7 @@ export async function loadContextForTask(
   }
   // "none" = no content loaded
 
+  logger.info(ctx, `operation=load_context_for_task job_id=${job_id} mode=${loadMode} loaded_count=${Object.keys(loaded_content).length}`);
   return { summary, refs, loaded_content };
 }
 
@@ -259,14 +289,17 @@ function calculateSummarizationCost(
  * Generate title and description for work output.
  * Used for context refs (lazy loading).
  *
+ * @param ctx - Request context for tracing
  * @param output - Work output content
  * @param work_id - Work item ID (for operation metadata)
  * @returns Title, description, and LLM operation record
  */
 export async function generateTitleAndDescription(
+  ctx: RequestContext,
   output: unknown,
   work_id: string
 ): Promise<SummarizationResult<TitleAndDescription>> {
+  logger.debug(ctx, `operation=generate_title_description work_id=${work_id}`);
   const client = getOpenRouterClient();
   const startTime = Date.now();
 
@@ -297,6 +330,9 @@ ${JSON.stringify(output, null, 2)}`,
 
   const content = JSON.parse(response.choices[0].message.content ?? "{}");
   const usage = response.usage;
+  const cost = calculateSummarizationCost(SUMMARIZATION_MODEL, usage);
+
+  logger.info(ctx, `operation=generate_title_description work_id=${work_id} title="${content.title ?? "Output"}" cost=${cost.toFixed(6)} duration_ms=${Date.now() - startTime}`);
 
   return {
     data: {
@@ -310,7 +346,7 @@ ${JSON.stringify(output, null, 2)}`,
       model: SUMMARIZATION_MODEL,
       native_tokens_prompt: usage?.prompt_tokens,
       native_tokens_completion: usage?.completion_tokens,
-      total_cost: calculateSummarizationCost(SUMMARIZATION_MODEL, usage),
+      total_cost: cost,
       metadata: {
         work_id,
         task: "title_description",
@@ -372,17 +408,21 @@ export function shouldUpdateSummary(
 /**
  * Update the context summary after work completion.
  *
+ * @param ctx - Request context for tracing
  * @param job_id - Job ID
  * @param work - Completed work item
  * @param db - Database client
  * @returns LLM operation if summary was updated, null otherwise
  */
 export async function updateContextSummary(
+  ctx: RequestContext,
   job_id: string,
   work: WorkItem,
   db: DatabaseClient
 ): Promise<LLMOperation | null> {
-  const job = await db.getJob(job_id);
+  logger.debug(ctx, `operation=update_context_summary job_id=${job_id} work_id=${work.work_id}`);
+
+  const job = await db.getJob(ctx, job_id);
   if (!job) return null;
 
   const currentSummary = job.context_summary ?? "";
@@ -390,6 +430,7 @@ export async function updateContextSummary(
   // Check if update is needed
   if (!work.output) return null;
   if (!shouldUpdateSummary(currentSummary, work.output)) {
+    logger.debug(ctx, `operation=update_context_summary job_id=${job_id} work_id=${work.work_id} skipped=true`);
     return null;
   }
 
@@ -421,9 +462,12 @@ Keep it under 100 words. Focus on what future tasks need to know.`,
 
   const newSummary = response.choices[0].message.content ?? currentSummary;
   const usage = response.usage;
+  const cost = calculateSummarizationCost(SUMMARIZATION_MODEL, usage);
 
   // Update in database
-  await db.updateContextSummary(job_id, newSummary);
+  await db.updateContextSummary(ctx, job_id, newSummary);
+
+  logger.info(ctx, `operation=update_context_summary job_id=${job_id} work_id=${work.work_id} cost=${cost.toFixed(6)} duration_ms=${Date.now() - startTime}`);
 
   return {
     operation_id: generateOperationId(),
@@ -432,7 +476,7 @@ Keep it under 100 words. Focus on what future tasks need to know.`,
     model: SUMMARIZATION_MODEL,
     native_tokens_prompt: usage?.prompt_tokens,
     native_tokens_completion: usage?.completion_tokens,
-    total_cost: calculateSummarizationCost(SUMMARIZATION_MODEL, usage),
+    total_cost: cost,
     metadata: {
       work_id: work.work_id,
       task: "context_summary",
@@ -449,30 +493,35 @@ Keep it under 100 words. Focus on what future tasks need to know.`,
  * Update context after a work item completes.
  * Generates title/description and updates rolling summary.
  *
+ * @param ctx - Request context for tracing
  * @param job_id - Job ID
  * @param work_id - Completed work item ID
  * @param db - Database client
  * @returns Array of LLM operations for cost tracking
  */
 export async function updateContextAfterWork(
+  ctx: RequestContext,
   job_id: string,
   work_id: string,
   db: DatabaseClient
 ): Promise<LLMOperation[]> {
-  const work = await db.getWorkItem(work_id);
+  logger.debug(ctx, `operation=update_context_after_work job_id=${job_id} work_id=${work_id}`);
+
+  const work = await db.getWorkItem(ctx, work_id);
   if (!work || !work.output) return [];
 
   const operations: LLMOperation[] = [];
 
   // Generate title and description
   const titleResult = await generateTitleAndDescription(
+    ctx,
     work.output,
     work_id
   );
   operations.push(titleResult.operation);
 
   // Add to context refs
-  await db.addContextRef(job_id, {
+  await db.addContextRef(ctx, job_id, {
     work_id,
     action_item_id: work.action_item_id,
     title: titleResult.data.title,
@@ -480,10 +529,11 @@ export async function updateContextAfterWork(
   });
 
   // Update rolling summary if needed
-  const summaryOperation = await updateContextSummary(job_id, work, db);
+  const summaryOperation = await updateContextSummary(ctx, job_id, work, db);
   if (summaryOperation) {
     operations.push(summaryOperation);
   }
 
+  logger.info(ctx, `operation=update_context_after_work job_id=${job_id} work_id=${work_id} operations_count=${operations.length}`);
   return operations;
 }

@@ -7,6 +7,8 @@
  * @see /docs/designs/orchestration/work-lifecycle/TECH_DESIGN.md
  */
 
+import type { RequestContext } from "@/lib/logging";
+import { createLogger } from "@/lib/logging";
 import type { DatabaseClient } from "@/lib/db/database-client";
 import type { WorkItem, Plan, ActionItem } from "@/types";
 import type {
@@ -22,6 +24,8 @@ import type {
 } from "./types";
 import { DEFAULT_RETRY_LIMITS } from "./types";
 import { TRANSITIONS } from "./transitions";
+
+const logger = createLogger("work-lifecycle");
 
 // =============================================================================
 // EXTENDED DATABASE CLIENT INTERFACE
@@ -86,23 +90,27 @@ export class WorkLifecycle implements IWorkLifecycle {
   /**
    * Execute a state transition for a work item.
    *
+   * @param ctx - Request context for tracing
    * @param work_id - The work item ID
    * @param trigger - The transition trigger (must be valid TransitionTrigger)
    * @param payload - Optional payload data (type depends on trigger)
    */
   async transition<T extends TransitionTrigger>(
+    ctx: RequestContext,
     work_id: string,
     trigger: T,
     payload?: PayloadFor<T>
   ): Promise<TransitionResult> {
     // Use DatabaseClient to fetch work item
-    const work = await this.db.getWorkItem(work_id);
+    const work = await this.db.getWorkItem(ctx, work_id);
     if (!work) {
+      logger.warn(ctx, `operation=transition work_id=${work_id} error=work_item_not_found`);
       return { success: false, error: "Work item not found" };
     }
 
     const transition = this.getTransition(work.status, trigger);
     if (!transition) {
+      logger.warn(ctx, `operation=transition work_id=${work_id} from=${work.status} trigger=${trigger} error=invalid_transition`);
       return {
         success: false,
         error: `Invalid transition: ${work.status} + ${trigger}`,
@@ -115,6 +123,7 @@ export class WorkLifecycle implements IWorkLifecycle {
       transition.guard &&
       !transition.guard(work, payload as Parameters<typeof transition.guard>[1])
     ) {
+      logger.warn(ctx, `operation=transition_blocked work_id=${work_id} from=${work.status} trigger=${trigger} reason=guard_failed guard=${transition.guardName}`);
       return { success: false, error: `Guard failed: ${transition.guardName}` };
     }
 
@@ -127,10 +136,12 @@ export class WorkLifecycle implements IWorkLifecycle {
 
     // Use DatabaseClient method to update work item
     // The updateWorkItemFields method performs a partial update
-    await this.db.updateWorkItemFields(work_id, {
+    await this.db.updateWorkItemFields(ctx, work_id, {
       status: transition.to,
       ...updates,
     });
+
+    logger.info(ctx, `operation=transition work_id=${work_id} from=${work.status} to=${transition.to} trigger=${trigger}`);
 
     // Create event for emission
     const event: WorkLifecycleEvent = {
@@ -153,37 +164,48 @@ export class WorkLifecycle implements IWorkLifecycle {
    * Get all work items that are ready for execution.
    * Returns items in "ready" status for the given job.
    *
+   * @param ctx - Request context for tracing
    * @param job_id - The job ID
    */
-  async getActionable(job_id: string): Promise<WorkItem[]> {
-    const allWorkItems = await this.db.getWorkItemsByJob(job_id);
-    return allWorkItems.filter((work) => work.status === "ready");
+  async getActionable(ctx: RequestContext, job_id: string): Promise<WorkItem[]> {
+    const allWorkItems = await this.db.getWorkItemsByJob(ctx, job_id);
+    const actionable = allWorkItems.filter((work) => work.status === "ready");
+    logger.info(ctx, `operation=get_actionable job_id=${job_id} total_count=${allWorkItems.length} actionable_count=${actionable.length}`);
+    return actionable;
   }
 
   /**
    * Check if a work item can retry for a specific retry type.
    *
+   * @param ctx - Request context for tracing
    * @param work_id - The work item ID
    * @param type - The type of retry to check
    */
-  async canRetry(work_id: string, type: RetryType): Promise<boolean> {
-    const work = await this.db.getWorkItem(work_id);
+  async canRetry(ctx: RequestContext, work_id: string, type: RetryType): Promise<boolean> {
+    const work = await this.db.getWorkItem(ctx, work_id);
     if (!work) {
+      logger.warn(ctx, `operation=can_retry work_id=${work_id} type=${type} error=work_item_not_found`);
       return false;
     }
 
-    return this.checkRetryLimit(work, type);
+    const canRetryResult = this.checkRetryLimit(work, type);
+    logger.debug(ctx, `operation=can_retry work_id=${work_id} type=${type} can_retry=${canRetryResult}`);
+    return canRetryResult;
   }
 
   /**
    * Spawn new TODO items from a parent TODO.
    *
+   * @param ctx - Request context for tracing
    * @param request - The spawn request
    */
-  async spawnTodos(request: SpawnRequest): Promise<SpawnResult> {
+  async spawnTodos(ctx: RequestContext, request: SpawnRequest): Promise<SpawnResult> {
+    logger.info(ctx, `operation=spawn_todos_start plan_id=${request.plan_id} parent_todo_id=${request.parent_todo_id} new_todo_count=${request.new_todos.length}`);
+
     // Use DatabaseClient to get plan
-    const plan = await this.db.getPlan(request.plan_id);
+    const plan = await this.db.getPlan(ctx, request.plan_id);
     if (!plan) {
+      logger.error(ctx, `operation=spawn_todos plan_id=${request.plan_id} error=plan_not_found`);
       throw new Error(`Plan not found: ${request.plan_id}`);
     }
 
@@ -204,12 +226,12 @@ export class WorkLifecycle implements IWorkLifecycle {
     }));
 
     // Use DatabaseClient to add action items to plan
-    await this.db.pushActionItemsToPlan(request.plan_id, newActionItems);
+    await this.db.pushActionItemsToPlan(ctx, request.plan_id, newActionItems);
 
     // Create work items for each new action item
     const createdWorkIds: string[] = [];
     for (const actionItem of newActionItems) {
-      const workItem = await this.db.createWorkItem({
+      const workItem = await this.db.createWorkItem(ctx, {
         work_id: `work_${Date.now()}_${actionItem.id}`,
         job_id: request.job_id,
         plan_id: request.plan_id,
@@ -250,6 +272,8 @@ export class WorkLifecycle implements IWorkLifecycle {
       new_todos: newActionItems,
     });
 
+    logger.info(ctx, `operation=spawn_todos_complete plan_id=${request.plan_id} parent_todo_id=${request.parent_todo_id} spawned_count=${newActionItems.length}`);
+
     return {
       spawned_items: newActionItems,
       created_work_ids: createdWorkIds,
@@ -260,38 +284,45 @@ export class WorkLifecycle implements IWorkLifecycle {
    * Check if a work item's dependencies are satisfied.
    * If all dependencies are completed, transitions to "ready".
    *
+   * @param ctx - Request context for tracing
    * @param work_id - The work item to check
    * @param plan - The plan containing action items
    */
-  async checkDependencies(work_id: string, plan: Plan): Promise<void> {
+  async checkDependencies(ctx: RequestContext, work_id: string, plan: Plan): Promise<void> {
     // Use DatabaseClient to get work item
-    const work = await this.db.getWorkItem(work_id);
+    const work = await this.db.getWorkItem(ctx, work_id);
     if (!work) {
+      logger.error(ctx, `operation=check_dependencies work_id=${work_id} error=work_item_not_found`);
       throw new Error(`Work item not found: ${work_id}`);
     }
 
     // Find the action item for this work
     const actionItem = plan.action_items.find((ai) => ai.id === work.action_item_id);
     if (!actionItem) {
+      logger.error(ctx, `operation=check_dependencies work_id=${work_id} error=action_item_not_found`);
       throw new Error(`Action item not found for work: ${work_id}`);
     }
 
     if (actionItem.depends_on.length === 0) {
       // No dependencies, ready immediately
-      await this.transition(work_id, "dependencies_met");
+      logger.debug(ctx, `operation=check_dependencies work_id=${work_id} dependencies_met=true reason=no_dependencies`);
+      await this.transition(ctx, work_id, "dependencies_met");
       return;
     }
 
     // Use DatabaseClient to get dependency work items
     const dependencyWorks = await this.db.getWorkItemsByActionItemIds(
+      ctx,
       work.job_id,
       actionItem.depends_on
     );
 
     const allCompleted = dependencyWorks.every((w) => w.status === "completed");
 
+    logger.debug(ctx, `operation=check_dependencies work_id=${work_id} dependency_count=${actionItem.depends_on.length} dependencies_met=${allCompleted}`);
+
     if (allCompleted) {
-      await this.transition(work_id, "dependencies_met");
+      await this.transition(ctx, work_id, "dependencies_met");
     }
   }
 
@@ -299,13 +330,17 @@ export class WorkLifecycle implements IWorkLifecycle {
    * Called when a work item completes.
    * Checks all pending items that depend on this one.
    *
+   * @param ctx - Request context for tracing
    * @param work_id - The completed work item ID
    * @param plan - The plan containing action items
    */
-  async onWorkCompleted(work_id: string, plan: Plan): Promise<void> {
+  async onWorkCompleted(ctx: RequestContext, work_id: string, plan: Plan): Promise<void> {
+    logger.info(ctx, `operation=on_work_completed work_id=${work_id}`);
+
     // Get the completed work item
-    const completedWork = await this.db.getWorkItem(work_id);
+    const completedWork = await this.db.getWorkItem(ctx, work_id);
     if (!completedWork) {
+      logger.error(ctx, `operation=on_work_completed work_id=${work_id} error=work_item_not_found`);
       throw new Error(`Work item not found: ${work_id}`);
     }
 
@@ -314,14 +349,16 @@ export class WorkLifecycle implements IWorkLifecycle {
       ai.depends_on.includes(completedWork.action_item_id)
     );
 
+    logger.debug(ctx, `operation=on_work_completed work_id=${work_id} dependent_count=${dependentActionItems.length}`);
+
     // Check dependencies for each dependent work item
     for (const actionItem of dependentActionItems) {
       if (actionItem.work_id) {
         // Get the work item for this action
-        const dependentWork = await this.db.getWorkItem(actionItem.work_id);
+        const dependentWork = await this.db.getWorkItem(ctx, actionItem.work_id);
         if (dependentWork && dependentWork.status === "pending") {
           // Check if all its dependencies are now satisfied
-          await this.checkDependencies(actionItem.work_id, plan);
+          await this.checkDependencies(ctx, actionItem.work_id, plan);
         }
       }
     }

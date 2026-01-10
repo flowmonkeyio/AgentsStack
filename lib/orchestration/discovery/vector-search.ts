@@ -7,7 +7,11 @@
  */
 
 import { getAgentsCollection } from "@/lib/db";
+import type { RequestContext } from "@/lib/logging";
+import { createLogger } from "@/lib/logging";
 import type { VectorSearchResult } from "./types";
+
+const logger = createLogger("discovery");
 
 // =============================================================================
 // VECTOR SEARCH INDEX CONFIGURATION
@@ -36,16 +40,19 @@ export const DEFAULT_NUM_CANDIDATES_MULTIPLIER = 3;
  * Search for agents using vector similarity.
  * Uses MongoDB Atlas Vector Search on the capabilities_embedding field.
  *
+ * @param ctx - Request context for tracing
  * @param queryEmbedding - 1024-dimensional embedding from Voyage AI
  * @param limit - Maximum number of results to return (default 20)
  * @returns Array of agents with vector similarity scores
  */
 export async function vectorSearch(
+  ctx: RequestContext,
   queryEmbedding: number[],
   limit: number = 20
 ): Promise<VectorSearchResult[]> {
   const collection = await getAgentsCollection();
 
+  const startTime = Date.now();
   const results = await collection
     .aggregate([
       {
@@ -73,6 +80,9 @@ export async function vectorSearch(
       },
     ])
     .toArray();
+  const durationMs = Date.now() - startTime;
+
+  logger.info(ctx, `operation=vector_search results=${results.length} limit=${limit} duration_ms=${durationMs}`);
 
   return results as VectorSearchResult[];
 }
@@ -81,6 +91,7 @@ export async function vectorSearch(
  * Search for agents with pre-filtering by price and quality.
  * Uses MongoDB Atlas Vector Search with filter.
  *
+ * @param ctx - Request context for tracing
  * @param queryEmbedding - 1024-dimensional embedding from Voyage AI
  * @param maxPrice - Maximum base price filter
  * @param minScore - Minimum average score filter (default 0.80)
@@ -88,6 +99,7 @@ export async function vectorSearch(
  * @returns Array of filtered agents with vector similarity scores
  */
 export async function vectorSearchWithFilter(
+  ctx: RequestContext,
   queryEmbedding: number[],
   maxPrice: number,
   minScore: number = 0.8,
@@ -101,7 +113,7 @@ export async function vectorSearchWithFilter(
 
   // If no filters, use simple vector search
   if (!hasMaxPrice && !hasMinScore) {
-    return vectorSearch(queryEmbedding, limit);
+    return vectorSearch(ctx, queryEmbedding, limit);
   }
 
   // Build filter conditions
@@ -120,6 +132,7 @@ export async function vectorSearchWithFilter(
       ? filterConditions[0]
       : { $and: filterConditions };
 
+  const startTime = Date.now();
   const results = await collection
     .aggregate([
       {
@@ -148,6 +161,9 @@ export async function vectorSearchWithFilter(
       },
     ])
     .toArray();
+  const durationMs = Date.now() - startTime;
+
+  logger.info(ctx, `operation=vector_search_filtered results=${results.length} max_price=${maxPrice} min_score=${minScore} limit=${limit} duration_ms=${durationMs}`);
 
   return results as VectorSearchResult[];
 }
@@ -156,14 +172,16 @@ export async function vectorSearchWithFilter(
  * Test if the vector search index exists and is functional.
  * Used for health checks.
  *
+ * @param ctx - Request context for tracing
  * @returns true if the index is working, false otherwise
  */
-export async function testVectorSearchIndex(): Promise<boolean> {
+export async function testVectorSearchIndex(ctx: RequestContext): Promise<boolean> {
   const collection = await getAgentsCollection();
 
   // Create a minimal test embedding (1024 dimensions of zeros)
   const testEmbedding = new Array(1024).fill(0);
 
+  const startTime = Date.now();
   try {
     await collection
       .aggregate([
@@ -179,8 +197,12 @@ export async function testVectorSearchIndex(): Promise<boolean> {
       ])
       .toArray();
 
+    const durationMs = Date.now() - startTime;
+    logger.debug(ctx, `operation=test_vector_index status=ok duration_ms=${durationMs}`);
     return true;
   } catch {
+    const durationMs = Date.now() - startTime;
+    logger.warn(ctx, `operation=test_vector_index status=failed duration_ms=${durationMs}`);
     return false;
   }
 }

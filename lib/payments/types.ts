@@ -7,6 +7,8 @@
  * @see /docs/designs/payments/TECH_DESIGN.md
  */
 
+import type { RequestContext } from "@/lib/logging";
+
 // =============================================================================
 // WALLET TYPES
 // =============================================================================
@@ -184,38 +186,43 @@ export interface X402TransferResult {
 export interface PaymentClient {
   /**
    * Execute a payment transfer.
+   * @param ctx - Request context for tracing
    * @param request - Payment request details
    * @returns Payment response with success status and tx_hash
    */
-  pay(request: PaymentRequest): Promise<PaymentResponse>;
+  pay(ctx: RequestContext, request: PaymentRequest): Promise<PaymentResponse>;
 
   /**
    * Check the status of a payment by transaction hash.
+   * @param ctx - Request context for tracing
    * @param tx_hash - Blockchain transaction hash
    * @returns Current payment status
    */
-  getPaymentStatus(tx_hash: string): Promise<PaymentStatus>;
+  getPaymentStatus(ctx: RequestContext, tx_hash: string): Promise<PaymentStatus>;
 
   /**
    * Get the USDC balance for a wallet address.
+   * @param ctx - Request context for tracing
    * @param address - Wallet address
    * @returns Balance in USDC
    */
-  getBalance(address: string): Promise<number>;
+  getBalance(ctx: RequestContext, address: string): Promise<number>;
 
   /**
    * Validate an Ethereum wallet address.
+   * @param ctx - Request context for tracing
    * @param address - Address to validate
    * @returns True if valid
    */
-  validateAddress(address: string): boolean;
+  validateAddress(ctx: RequestContext, address: string): boolean;
 
   /**
    * Create an embedded wallet for a user.
+   * @param ctx - Request context for tracing
    * @param user_id - User ID to create wallet for
    * @returns Created user wallet
    */
-  createEmbeddedWallet(user_id: string): Promise<UserWallet>;
+  createEmbeddedWallet(ctx: RequestContext, user_id: string): Promise<UserWallet>;
 }
 
 /**

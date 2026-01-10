@@ -7,6 +7,7 @@
  */
 
 import type { LLMOperation } from "@/types";
+import type { RequestContext } from "@/lib/logging";
 
 // =============================================================================
 // REQUEST/RESPONSE TYPES
@@ -115,18 +116,18 @@ export interface DiscoveryService {
    * Discover agents for a task.
    * Returns ranked candidates with costs for billing.
    */
-  discoverAgents(request: DiscoveryRequest): Promise<DiscoveryResult>;
+  discoverAgents(ctx: RequestContext, request: DiscoveryRequest): Promise<DiscoveryResult>;
 
   /**
    * Embed agent capabilities (for registration).
    * Returns embedding vector and operation for cost tracking.
    */
-  embedCapabilities(capabilities: string): Promise<EmbeddingResult>;
+  embedCapabilities(ctx: RequestContext, capabilities: string): Promise<EmbeddingResult>;
 
   /**
    * Health check for Voyage AI and MongoDB vector search.
    */
-  healthCheck(): Promise<{ voyage: boolean; mongo_vector: boolean }>;
+  healthCheck(ctx: RequestContext): Promise<{ voyage: boolean; mongo_vector: boolean }>;
 }
 
 // =============================================================================

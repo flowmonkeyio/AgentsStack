@@ -15,7 +15,10 @@ import {
   checkSSEConnectionLimit,
   trackSSEConnection,
 } from "@/lib/api";
+import { createContext, createLogger } from "@/lib/logging";
 import type { ErrorResponse } from "@/types/api";
+
+const logger = createLogger("api");
 
 // =============================================================================
 // GET /api/jobs/:id/stream - SSE endpoint for real-time updates
@@ -25,9 +28,14 @@ export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ): Promise<Response> {
+  const ctx = createContext();
+  const { id: job_id } = await params;
+  logger.info(ctx, `operation=sse_connect job_id=${job_id} started=true`);
+
   // Authenticate
   const { userId: clerkId } = await auth();
   if (!clerkId) {
+    logger.info(ctx, `operation=sse_connect job_id=${job_id} status=unauthorized`);
     return new Response(
       JSON.stringify({
         error: "Unauthorized",
@@ -40,12 +48,11 @@ export async function GET(
     );
   }
 
-  const { id: job_id } = await params;
-
   // Get user
   const db = getDatabaseClient();
-  const user = await db.getUser(clerkId);
+  const user = await db.getUser(ctx, clerkId);
   if (!user) {
+    logger.info(ctx, `operation=sse_connect job_id=${job_id} status=user_not_found`);
     return new Response(
       JSON.stringify({
         error: "User not found",
@@ -60,6 +67,7 @@ export async function GET(
 
   // Check SSE connection limit (5 per user)
   if (!checkSSEConnectionLimit(user.user_id)) {
+    logger.info(ctx, `operation=sse_connect job_id=${job_id} user_id=${user.user_id} status=connection_limit_exceeded`);
     return new Response(
       JSON.stringify({
         error: "Too many SSE connections",
@@ -74,8 +82,9 @@ export async function GET(
   }
 
   // Get job
-  const job = await db.getJob(job_id);
+  const job = await db.getJob(ctx, job_id);
   if (!job) {
+    logger.info(ctx, `operation=sse_connect job_id=${job_id} status=not_found`);
     return new Response(
       JSON.stringify({
         error: "Job not found",
@@ -90,6 +99,7 @@ export async function GET(
 
   // Verify ownership
   if (job.user_id !== user.user_id) {
+    logger.info(ctx, `operation=sse_connect job_id=${job_id} status=forbidden`);
     return new Response(
       JSON.stringify({
         error: "Job not found",
@@ -153,6 +163,8 @@ export async function GET(
     });
   }
 
+  logger.info(ctx, `operation=sse_connect job_id=${job_id} user_id=${user.user_id} status=connected`);
+
   // Heartbeat every 30 seconds
   const heartbeat = setInterval(() => {
     send({
@@ -164,6 +176,7 @@ export async function GET(
 
   // Cleanup on disconnect (handled by AbortSignal)
   request.signal.addEventListener("abort", () => {
+    logger.info(ctx, `operation=sse_disconnect job_id=${job_id} user_id=${user.user_id} status=disconnected`);
     clearInterval(heartbeat);
     if (unsubscribe) {
       unsubscribe();

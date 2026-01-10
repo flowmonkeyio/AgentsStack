@@ -7,12 +7,16 @@
  * @see /docs/designs/orchestration/integrations/TECH_DESIGN.md
  */
 
+import type { RequestContext } from "@/lib/logging";
+import { createLogger } from "@/lib/logging";
 import { nanoid } from "nanoid";
 import type {
   ExternalAgentClient,
   AgentExecuteRequest,
-  AgentCallbackRequest,
 } from "@/lib/external-agents";
+import type { AgentCallbackRequest } from "./types";
+
+const logger = createLogger("integrations");
 import {
   isExecuteResponseSync,
   isExecuteResponseAsync,
@@ -85,19 +89,24 @@ export interface DispatchDependencies {
  * 4. Handle sync response (immediate) or async response (polling)
  * 5. Store usage data for billing
  *
+ * @param ctx - Request context for tracing
  * @param work_id - ID of the work item to dispatch
  * @param deps - Required dependencies
  * @returns Dispatch result (sync or async)
  */
 export async function dispatchToAgent(
+  ctx: RequestContext,
   work_id: string,
   deps: DispatchDependencies
 ): Promise<DispatchResult> {
   const { externalAgents, db, lifecycle, emitEvent } = deps;
 
+  logger.debug(ctx, `operation=dispatch_start work_id=${work_id}`);
+
   // Fetch work item
-  const work = await db.getWorkItem(work_id);
+  const work = await db.getWorkItem(ctx, work_id);
   if (!work) {
+    logger.error(ctx, `operation=dispatch work_id=${work_id} error=work_not_found`);
     throw new IntegrationError(
       `Work item not found: ${work_id}`,
       "external_agents",
@@ -108,6 +117,7 @@ export async function dispatchToAgent(
 
   // Validate work has prompt and agent
   if (!work.prompt?.generated_prompt) {
+    logger.error(ctx, `operation=dispatch work_id=${work_id} error=no_prompt status=${work.status}`);
     throw new IntegrationError(
       `Work item has no generated prompt`,
       "external_agents",
@@ -117,6 +127,7 @@ export async function dispatchToAgent(
   }
 
   if (!work.agent) {
+    logger.error(ctx, `operation=dispatch work_id=${work_id} error=no_agent`);
     throw new IntegrationError(
       `Work item has no agent assigned`,
       "external_agents",
@@ -147,12 +158,15 @@ export async function dispatchToAgent(
     };
   }
 
+  logger.info(ctx, `operation=dispatch work_id=${work_id} agent_id=${work.agent.agent_id} is_retry=${!!work.retry_context}`);
+
   // Call external agent
   let response;
   try {
     response = await externalAgents.execute(work.agent.url, request);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
+    logger.error(ctx, `operation=dispatch_failed work_id=${work_id} agent_id=${work.agent.agent_id} reason=agent_error`, error instanceof Error ? error : undefined);
     throw new IntegrationError(
       `External agent execution failed: ${message}`,
       "external_agents",
@@ -163,6 +177,8 @@ export async function dispatchToAgent(
 
   // Handle sync response
   if (isExecuteResponseSync(response)) {
+    logger.info(ctx, `operation=dispatch work_id=${work_id} agent_id=${work.agent.agent_id} mode=sync`);
+
     // Transition to received state
     await lifecycle.transition(work_id, "sync_response", {
       output: {
@@ -173,7 +189,7 @@ export async function dispatchToAgent(
     });
 
     // Store external agent usage
-    await storeExternalAgentUsage(work_id, response.usage, deps);
+    await storeExternalAgentUsage(ctx, work_id, response.usage, deps);
 
     emitEvent({
       type: "work:output_received",
@@ -190,6 +206,8 @@ export async function dispatchToAgent(
   if (isExecuteResponseAsync(response)) {
     const callbackUrl = `${BASE_URL}/api/webhooks/work/${work_id}`;
 
+    logger.info(ctx, `operation=dispatch work_id=${work_id} agent_id=${work.agent.agent_id} mode=async reference_id=${response.reference_id}`);
+
     await lifecycle.transition(work_id, "async_response", {
       reference_id: response.reference_id,
       status_url: response.status_url,
@@ -197,7 +215,7 @@ export async function dispatchToAgent(
     });
 
     // Update polling configuration
-    await db.updateWorkItemFields(work_id, {
+    await db.updateWorkItemFields(ctx, work_id, {
       external_ref: {
         reference_id: response.reference_id,
         status_url: response.status_url,
@@ -226,6 +244,7 @@ export async function dispatchToAgent(
     };
   }
 
+  logger.error(ctx, `operation=dispatch work_id=${work_id} error=unexpected_response`);
   throw new IntegrationError(
     `Unexpected response status from agent`,
     "external_agents",
@@ -241,29 +260,36 @@ export async function dispatchToAgent(
 /**
  * Poll an external agent for task completion.
  *
+ * @param ctx - Request context for tracing
  * @param work_id - ID of the work item to poll
  * @param deps - Required dependencies
  * @returns Poll result
  */
 export async function pollAgent(
+  ctx: RequestContext,
   work_id: string,
   deps: DispatchDependencies
 ): Promise<PollResult> {
   const { externalAgents, db, lifecycle, emitEvent } = deps;
 
+  logger.debug(ctx, `operation=poll_agent_start work_id=${work_id}`);
+
   // Fetch work item
-  const work = await db.getWorkItem(work_id);
+  const work = await db.getWorkItem(ctx, work_id);
   if (!work) {
+    logger.error(ctx, `operation=poll_agent work_id=${work_id} error=work_not_found`);
     return { status: "failed", error: "Work item not found" };
   }
 
   // Validate external ref exists
   if (!work.external_ref) {
+    logger.error(ctx, `operation=poll_agent work_id=${work_id} error=no_external_ref`);
     return { status: "failed", error: "No external reference" };
   }
 
   // Check timeout
   if (new Date() > work.external_ref.polling.timeout_at) {
+    logger.warn(ctx, `operation=poll_agent work_id=${work_id} status=timeout`);
     await lifecycle.transition(work_id, "poll_timeout");
     return { status: "failed", error: "Polling timeout" };
   }
@@ -274,8 +300,9 @@ export async function pollAgent(
     response = await externalAgents.checkStatus(work.external_ref.status_url);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
+    logger.warn(ctx, `operation=poll_agent work_id=${work_id} status=poll_error error=${message}`);
     // Update last error but don't fail yet - could be transient
-    await db.updateWorkItemFields(work_id, {
+    await db.updateWorkItemFields(ctx, work_id, {
       external_ref: {
         ...work.external_ref,
         last_poll_at: new Date(),
@@ -287,6 +314,8 @@ export async function pollAgent(
 
   // Handle completed
   if (isStatusCompleted(response)) {
+    logger.info(ctx, `operation=poll_agent work_id=${work_id} status=completed`);
+
     await lifecycle.transition(work_id, "poll_completed", {
       output: {
         title: getOutputTitle(response.output),
@@ -296,7 +325,7 @@ export async function pollAgent(
     });
 
     // Store usage
-    await storeExternalAgentUsage(work_id, response.usage, deps);
+    await storeExternalAgentUsage(ctx, work_id, response.usage, deps);
 
     emitEvent({
       type: "work:output_received",
@@ -311,7 +340,9 @@ export async function pollAgent(
 
   // Handle failed
   if (isStatusFailed(response)) {
-    await db.updateWorkItemFields(work_id, {
+    logger.warn(ctx, `operation=poll_agent work_id=${work_id} status=failed error=${response.error}`);
+
+    await db.updateWorkItemFields(ctx, work_id, {
       external_ref: {
         ...work.external_ref,
         last_poll_at: new Date(),
@@ -325,7 +356,8 @@ export async function pollAgent(
   }
 
   // Still pending - update next poll time
-  await updateNextPollTime(work_id, work, deps.db);
+  logger.debug(ctx, `operation=poll_agent work_id=${work_id} status=pending progress=${response.progress ?? 0}`);
+  await updateNextPollTime(ctx, work_id, work, deps.db);
   return { status: "pending", progress: response.progress };
 }
 
@@ -359,11 +391,13 @@ export function calculateNextPollInterval(work: WorkItem): number {
 /**
  * Update the next poll time for a work item.
  *
+ * @param ctx - Request context for tracing
  * @param work_id - Work item ID
  * @param work - Current work item
  * @param db - Database client
  */
 async function updateNextPollTime(
+  ctx: RequestContext,
   work_id: string,
   work: WorkItem,
   db: ExtendedDatabaseClient
@@ -372,7 +406,7 @@ async function updateNextPollTime(
 
   const nextInterval = calculateNextPollInterval(work);
 
-  await db.updateWorkItemFields(work_id, {
+  await db.updateWorkItemFields(ctx, work_id, {
     external_ref: {
       ...work.external_ref,
       last_poll_at: new Date(),
@@ -393,6 +427,7 @@ async function updateNextPollTime(
 /**
  * Handle callback from external agent when async task completes.
  *
+ * @param ctx - Request context for tracing
  * @param work_id - Work item ID from URL
  * @param body - Parsed request body
  * @param rawBody - Raw request body for signature verification
@@ -400,6 +435,7 @@ async function updateNextPollTime(
  * @param deps - Required dependencies
  */
 export async function handleAgentCallback(
+  ctx: RequestContext,
   work_id: string,
   body: AgentCallbackRequest,
   rawBody: string,
@@ -408,9 +444,12 @@ export async function handleAgentCallback(
 ): Promise<void> {
   const { db, lifecycle, emitEvent } = deps;
 
+  logger.debug(ctx, `operation=webhook_received work_id=${work_id} status=${body.status}`);
+
   // Fetch work item
-  const work = await db.getWorkItem(work_id);
+  const work = await db.getWorkItem(ctx, work_id);
   if (!work) {
+    logger.error(ctx, `operation=webhook_received work_id=${work_id} error=work_not_found`);
     throw new IntegrationError(
       "Work item not found",
       "external_agents",
@@ -421,6 +460,7 @@ export async function handleAgentCallback(
 
   // Fetch agent for webhook secret
   if (!work.agent) {
+    logger.error(ctx, `operation=webhook_received work_id=${work_id} error=no_agent`);
     throw new IntegrationError(
       "Work item has no agent",
       "external_agents",
@@ -429,7 +469,7 @@ export async function handleAgentCallback(
     );
   }
 
-  const agent = await db.getAgent(work.agent.agent_id);
+  const agent = await db.getAgent(ctx, work.agent.agent_id);
 
   // Verify signature
   const isProduction = process.env.NODE_ENV === "production";
@@ -444,6 +484,7 @@ export async function handleAgentCallback(
   );
 
   if (!verification.valid) {
+    logger.error(ctx, `operation=webhook_received work_id=${work_id} error=invalid_signature reason=${verification.error}`);
     throw new IntegrationError(
       verification.error ?? "Invalid webhook signature",
       "external_agents",
@@ -454,6 +495,7 @@ export async function handleAgentCallback(
 
   // Validate reference_id
   if (work.external_ref?.reference_id !== body.reference_id) {
+    logger.error(ctx, `operation=webhook_received work_id=${work_id} error=invalid_reference_id expected=${work.external_ref?.reference_id} received=${body.reference_id}`);
     throw new IntegrationError(
       "Invalid reference_id",
       "external_agents",
@@ -464,6 +506,8 @@ export async function handleAgentCallback(
 
   // Handle completed
   if (body.status === "completed" && body.output) {
+    logger.info(ctx, `operation=webhook_completed work_id=${work_id} agent_id=${work.agent.agent_id}`);
+
     await lifecycle.transition(work_id, "poll_completed", {
       output: {
         title: body.output.title,
@@ -473,7 +517,7 @@ export async function handleAgentCallback(
     });
 
     // Store usage
-    await storeExternalAgentUsage(work_id, body.usage, deps);
+    await storeExternalAgentUsage(ctx, work_id, body.usage, deps);
 
     emitEvent({
       type: "work:output_received",
@@ -487,7 +531,9 @@ export async function handleAgentCallback(
 
   // Handle failed
   if (body.status === "failed") {
-    await db.updateWorkItemFields(work_id, {
+    logger.warn(ctx, `operation=webhook_failed work_id=${work_id} error=${body.error ?? "Unknown error"}`);
+
+    await db.updateWorkItemFields(ctx, work_id, {
       external_ref: work.external_ref
         ? {
             ...work.external_ref,
@@ -498,14 +544,16 @@ export async function handleAgentCallback(
 
     // Store partial usage if reported
     if (body.usage) {
-      await storeExternalAgentUsage(work_id, body.usage, deps);
+      await storeExternalAgentUsage(ctx, work_id, body.usage, deps);
     }
     return;
   }
 
   // Handle progress update
   if (body.status === "progress" && work.external_ref) {
-    await db.updateWorkItemFields(work_id, {
+    logger.debug(ctx, `operation=webhook_progress work_id=${work_id} progress=${body.progress ?? 0}`);
+
+    await db.updateWorkItemFields(ctx, work_id, {
       external_ref: {
         ...work.external_ref,
         last_response: { progress: body.progress },
@@ -522,18 +570,22 @@ export async function handleAgentCallback(
  * Store external agent usage data for billing and auditing.
  * Transforms ModelUsage to LLMOperation format.
  *
+ * @param ctx - Request context for tracing
  * @param work_id - Work item ID
  * @param usage - Usage data from agent
  * @param deps - Required dependencies
  */
 async function storeExternalAgentUsage(
+  ctx: RequestContext,
   work_id: string,
   usage: AgentUsage,
   deps: DispatchDependencies
 ): Promise<void> {
   const { db, emitEvent } = deps;
 
-  const work = await db.getWorkItem(work_id);
+  logger.debug(ctx, `operation=store_usage work_id=${work_id} total_cost=${usage.total_cost}`);
+
+  const work = await db.getWorkItem(ctx, work_id);
   if (!work) return;
 
   const job_id = work.job_id;
