@@ -99,7 +99,14 @@ async function embedText(
   });
 
   // Extract the embedding from the first (and only) result
-  const embedding = result.data[0].embedding;
+  if (!result.data || result.data.length === 0) {
+    throw new Error("Voyage AI returned no embeddings");
+  }
+  const firstResult = result.data[0];
+  if (!firstResult.embedding) {
+    throw new Error("Voyage AI returned no embedding vector");
+  }
+  const embedding = firstResult.embedding;
   const totalTokens = result.usage?.totalTokens ?? 0;
 
   return {
@@ -142,7 +149,15 @@ export async function embedBatch(
     inputType: inputType,
   });
 
-  const embeddings = result.data.map((item) => item.embedding);
+  if (!result.data || result.data.length === 0) {
+    throw new Error("Voyage AI returned no embeddings");
+  }
+  const embeddings = result.data.map((item) => {
+    if (!item.embedding) {
+      throw new Error("Voyage AI returned missing embedding in batch");
+    }
+    return item.embedding;
+  });
   const totalTokens = result.usage?.totalTokens ?? 0;
 
   return {

@@ -11,8 +11,8 @@ import { nanoid } from "nanoid";
 import type {
   ExternalAgentClient,
   AgentExecuteRequest,
-  AgentCallbackRequest,
 } from "@/lib/external-agents";
+import type { AgentCallbackRequest } from "./types";
 import {
   isExecuteResponseSync,
   isExecuteResponseAsync,

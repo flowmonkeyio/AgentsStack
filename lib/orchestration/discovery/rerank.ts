@@ -50,7 +50,29 @@ export async function rerankCandidates(
   });
 
   // Map rerank results back to candidates with relevance scores
+  if (!result.data || result.data.length === 0) {
+    return {
+      results: [],
+      operation: {
+        operation_id: generateOperationId(),
+        timestamp: new Date(),
+        operation_type: "discovery_rerank",
+        model: "rerank-2",
+        native_tokens_prompt: 0,
+        total_cost: 0,
+        metadata: {
+          candidates_count: candidates.length,
+          top_k: topK,
+          results_count: 0,
+        },
+      },
+    };
+  }
+
   const results: RerankResult[] = result.data.map((r) => {
+    if (r.index === undefined) {
+      throw new Error("Voyage AI rerank returned result without index");
+    }
     const candidate = candidates[r.index];
     return {
       agent_id: candidate.agent_id,
@@ -58,7 +80,7 @@ export async function rerankCandidates(
       capabilities: candidate.capabilities,
       base_price: candidate.base_price,
       stats: candidate.stats,
-      relevance_score: r.relevanceScore,
+      relevance_score: r.relevanceScore ?? 0,
     };
   });
 

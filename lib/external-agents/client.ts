@@ -239,8 +239,11 @@ export class ExternalAgentClient {
     statusUrl: string,
     onProgress?: (progress: AgentStatusResponseProgress) => void
   ): Promise<AgentStatusResponseCompleted> {
-    const { initialIntervalMs, maxIntervalMs, backoffMultiplier, timeoutMs } =
-      this.config.polling;
+    const polling = this.config.polling;
+    const initialIntervalMs = polling.initialIntervalMs ?? DEFAULT_CONFIG.polling.initialIntervalMs;
+    const maxIntervalMs = polling.maxIntervalMs ?? DEFAULT_CONFIG.polling.maxIntervalMs;
+    const backoffMultiplier = polling.backoffMultiplier ?? DEFAULT_CONFIG.polling.backoffMultiplier;
+    const timeoutMs = polling.timeoutMs ?? DEFAULT_CONFIG.polling.timeoutMs;
 
     const startTime = Date.now();
     let currentInterval = initialIntervalMs;
