@@ -10,8 +10,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@clerk/nextjs/server";
 import { getDatabaseClient } from "@/lib/db";
 import { rateLimiters } from "@/lib/api";
+import { createContext, createLogger } from "@/lib/logging";
 import type { GetJobResponse, ErrorResponse } from "@/types/api";
 import type { ReasoningEntry } from "@/types/data";
+
+const logger = createLogger("api");
 
 // =============================================================================
 // GET /api/jobs/:id - Get job details
@@ -21,22 +24,26 @@ export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ): Promise<NextResponse<GetJobResponse | ErrorResponse>> {
+  const ctx = createContext();
+  const { id: job_id } = await params;
+  logger.info(ctx, `operation=get_job job_id=${job_id} started=true`);
+
   try {
     // Authenticate
     const { userId: clerkId } = await auth();
     if (!clerkId) {
+      logger.info(ctx, `operation=get_job job_id=${job_id} status=unauthorized`);
       return NextResponse.json(
         { error: "Unauthorized", code: "UNAUTHORIZED" },
         { status: 401 }
       );
     }
 
-    const { id: job_id } = await params;
-
     // Get user
     const db = getDatabaseClient();
     const user = await db.getUser(clerkId);
     if (!user) {
+      logger.info(ctx, `operation=get_job job_id=${job_id} status=user_not_found`);
       return NextResponse.json(
         { error: "User not found", code: "NOT_FOUND" },
         { status: 404 }
@@ -46,6 +53,7 @@ export async function GET(
     // Rate limit
     const rateResult = await rateLimiters.getJob(request, user.user_id);
     if (!rateResult.allowed) {
+      logger.info(ctx, `operation=get_job job_id=${job_id} user_id=${user.user_id} status=rate_limited`);
       return NextResponse.json(
         {
           error: "Rate limit exceeded",
@@ -70,6 +78,7 @@ export async function GET(
     // Get job
     const job = await db.getJob(job_id);
     if (!job) {
+      logger.info(ctx, `operation=get_job job_id=${job_id} status=not_found`);
       return NextResponse.json(
         { error: "Job not found", code: "NOT_FOUND" },
         { status: 404 }
@@ -78,6 +87,7 @@ export async function GET(
 
     // Verify ownership
     if (job.user_id !== user.user_id) {
+      logger.info(ctx, `operation=get_job job_id=${job_id} status=forbidden`);
       return NextResponse.json(
         { error: "Job not found", code: "NOT_FOUND" },
         { status: 404 }
@@ -161,9 +171,10 @@ export async function GET(
       ),
     };
 
+    logger.info(ctx, `operation=get_job job_id=${job_id} status=found work_items_count=${workItems.length}`);
     return NextResponse.json(response);
   } catch (error) {
-    console.error("Failed to fetch job:", error);
+    logger.error(ctx, `operation=get_job job_id=${job_id} status=failed`, error instanceof Error ? error : undefined);
     return NextResponse.json(
       { error: "Internal server error", code: "INTERNAL_ERROR" },
       { status: 500 }

@@ -6,8 +6,11 @@
  * @see /docs/designs/payments/TECH_DESIGN.md
  */
 
+import { RequestContext, createLogger } from "@/lib/logging";
 import type { PaymentRequest, PaymentResponse, PaymentRetryConfig } from "./types";
 import { executePayment } from "./x402";
+
+const logger = createLogger("payments");
 
 // =============================================================================
 // ERROR CLASSIFICATION
@@ -93,30 +96,54 @@ function sleep(ms: number): Promise<void> {
  * Uses exponential backoff between retries.
  * Will not retry if the error is marked as non-retryable.
  *
+ * @param ctx - Request context for tracing
  * @param request - Payment request details
  * @param config - Retry configuration (optional, uses defaults)
  * @returns Payment response after all attempts
  */
 export async function payWithRetry(
+  ctx: RequestContext,
   request: PaymentRequest,
   config: PaymentRetryConfig = DEFAULT_RETRY_CONFIG
 ): Promise<PaymentResponse> {
   let lastError: string | undefined;
   let delay = config.retry_delay_ms;
 
+  logger.info(
+    ctx,
+    `operation=pay_with_retry work_id=${request.work_id} max_retries=${config.max_retries} status=started`
+  );
+
   for (let attempt = 1; attempt <= config.max_retries; attempt++) {
-    const result = await executePayment(request);
+    logger.info(
+      ctx,
+      `operation=pay_with_retry work_id=${request.work_id} attempt=${attempt} max_retries=${config.max_retries}`
+    );
+
+    const result = await executePayment(ctx, request);
 
     if (result.success) {
+      logger.info(
+        ctx,
+        `operation=pay_with_retry work_id=${request.work_id} attempt=${attempt} tx_hash=${result.tx_hash} status=success`
+      );
       return result;
     }
 
     if (!result.retry_suggested) {
       // Non-retryable error
+      logger.error(
+        ctx,
+        `operation=pay_with_retry work_id=${request.work_id} attempt=${attempt} status=failed reason=non_retryable error="${result.error}"`
+      );
       return result;
     }
 
     lastError = result.error;
+    logger.warn(
+      ctx,
+      `operation=pay_with_retry work_id=${request.work_id} attempt=${attempt} status=retry_scheduled delay=${delay} error="${lastError}"`
+    );
 
     // Don't sleep after the last attempt
     if (attempt < config.max_retries) {
@@ -124,6 +151,11 @@ export async function payWithRetry(
       delay *= config.backoff_multiplier;
     }
   }
+
+  logger.error(
+    ctx,
+    `operation=pay_with_retry work_id=${request.work_id} status=exhausted max_retries=${config.max_retries} error="${lastError}"`
+  );
 
   return {
     success: false,

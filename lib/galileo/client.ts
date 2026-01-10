@@ -18,6 +18,9 @@ import type {
   TraceableInput,
   QualityMetrics,
 } from "./types";
+import { RequestContext, createLogger } from "@/lib/logging";
+
+const logger = createLogger("galileo");
 
 // =============================================================================
 // CONSTANTS
@@ -203,10 +206,13 @@ async function apiRequest<T>(
 /**
  * Create a Galileo client with verification and tracing capabilities.
  *
+ * @param ctx - Request context for tracing
  * @param config - Client configuration
  * @returns GalileoClient instance
  */
-export function createGalileoClient(config: GalileoConfig): GalileoClient {
+export function createGalileoClient(ctx: RequestContext, config: GalileoConfig): GalileoClient {
+  logger.info(ctx, `operation=create_client project_id=${config.projectId} environment=${config.environment ?? "production"}`);
+
   const state: GalileoClientState = {
     apiKey: config.apiKey,
     projectId: config.projectId,
@@ -218,7 +224,9 @@ export function createGalileoClient(config: GalileoConfig): GalileoClient {
     /**
      * Verify agent output against instructions using Galileo's Instruction Adherence metric.
      */
-    async verify(request: VerifyRequest): Promise<VerifyResponse> {
+    async verify(ctx: RequestContext, request: VerifyRequest): Promise<VerifyResponse> {
+      logger.debug(ctx, `operation=verify_start criteria_count=${request.instructions.length}`);
+
       try {
         const response = await apiRequest<VerifyResponse>(
           state,
@@ -230,18 +238,24 @@ export function createGalileoClient(config: GalileoConfig): GalileoClient {
             context: request.context,
           }
         );
+
+        const decision = getVerificationDecision(response.score);
+        logger.info(ctx, `operation=verify score=${response.score} status=${decision} criteria_count=${request.instructions.length}`);
+
         return response;
       } catch (error) {
         const galileoError = error as GalileoError;
 
         // Handle rate limiting with retry
         if (galileoError.code === "RATE_LIMITED") {
+          logger.warn(ctx, `operation=verify status=rate_limited retrying=true`);
           await delay(DEFAULT_RETRY_DELAY_MS);
-          return this.verify(request);
+          return this.verify(ctx, request);
         }
 
         // Handle invalid input by returning failed verification
         if (galileoError.code === "INVALID_INPUT") {
+          logger.error(ctx, `operation=verify_failed reason=invalid_input`, galileoError);
           return {
             score: 0,
             reasoning: `Verification failed: ${galileoError.message}`,
@@ -251,6 +265,7 @@ export function createGalileoClient(config: GalileoConfig): GalileoClient {
           };
         }
 
+        logger.error(ctx, `operation=verify_failed`, galileoError);
         throw error;
       }
     },
@@ -258,7 +273,9 @@ export function createGalileoClient(config: GalileoConfig): GalileoClient {
     /**
      * Record a single trace event.
      */
-    async trace(event: TraceEvent): Promise<void> {
+    async trace(ctx: RequestContext, event: TraceEvent): Promise<void> {
+      logger.debug(ctx, `operation=trace_start agent=${event.agent} step=${event.step} job_id=${event.job_id}`);
+
       try {
         await apiRequest<void>(state, "/traces", "POST", {
           trace_id: event.trace_id,
@@ -274,18 +291,21 @@ export function createGalileoClient(config: GalileoConfig): GalileoClient {
           tokens_used: event.tokens_used,
           metadata: event.metadata,
         });
+
+        logger.debug(ctx, `operation=trace_complete agent=${event.agent} duration_ms=${event.duration_ms}`);
       } catch (error) {
         // Tracing failures should not block execution
-        // Log the error but don't throw
-        console.error("[Galileo] Trace error:", error);
+        logger.error(ctx, `operation=trace_failed agent=${event.agent}`, error instanceof Error ? error : new Error(String(error)));
       }
     },
 
     /**
      * Record multiple trace events in a batch.
      */
-    async traceBatch(events: TraceEvent[]): Promise<void> {
+    async traceBatch(ctx: RequestContext, events: TraceEvent[]): Promise<void> {
       if (events.length === 0) return;
+
+      logger.debug(ctx, `operation=trace_batch_start event_count=${events.length}`);
 
       try {
         await apiRequest<void>(state, "/traces/batch", "POST", {
@@ -304,17 +324,25 @@ export function createGalileoClient(config: GalileoConfig): GalileoClient {
             metadata: event.metadata,
           })),
         });
+
+        logger.debug(ctx, `operation=trace_batch_complete event_count=${events.length}`);
       } catch (error) {
         // Tracing failures should not block execution
-        console.error("[Galileo] Batch trace error:", error);
+        logger.error(ctx, `operation=trace_batch_failed event_count=${events.length}`, error instanceof Error ? error : new Error(String(error)));
       }
     },
 
     /**
      * Get quality metrics for a job.
      */
-    async getJobMetrics(job_id: string): Promise<QualityMetrics> {
-      return apiRequest<QualityMetrics>(state, `/metrics/jobs/${job_id}`, "GET");
+    async getJobMetrics(ctx: RequestContext, job_id: string): Promise<QualityMetrics> {
+      logger.debug(ctx, `operation=get_metrics_start job_id=${job_id}`);
+
+      const metrics = await apiRequest<QualityMetrics>(state, `/metrics/jobs/${job_id}`, "GET");
+
+      logger.info(ctx, `operation=get_metrics_complete job_id=${job_id} pass_rate=${metrics.verification.pass_rate}`);
+
+      return metrics;
     },
   };
 }
@@ -329,6 +357,7 @@ export function createGalileoClient(config: GalileoConfig): GalileoClient {
  * This wrapper captures input/output and timing information for observability.
  * The input type must extend TraceableInput (i.e., have a job_id property).
  *
+ * @param ctx - Request context for tracing
  * @param nodeName - Name of the node (used as agent type in traces)
  * @param nodeFunction - The async function to wrap
  * @param client - Optional Galileo client (if not provided, uses global client)
@@ -337,6 +366,7 @@ export function createGalileoClient(config: GalileoConfig): GalileoClient {
  * @example
  * ```typescript
  * const tracedPlanningNode = withTracing(
+ *   ctx,
  *   "planning",
  *   async (input: PlanningInput) => {
  *     // ... planning logic
@@ -347,23 +377,30 @@ export function createGalileoClient(config: GalileoConfig): GalileoClient {
  * ```
  */
 export function withTracing<TInput extends TraceableInput, TOutput>(
+  ctx: RequestContext,
   nodeName: string,
   nodeFunction: (input: TInput) => Promise<TOutput>,
   client?: GalileoClient
 ): (input: TInput) => Promise<TOutput> {
+  logger.debug(ctx, `operation=with_tracing_setup node=${nodeName}`);
+
   return async (input: TInput): Promise<TOutput> => {
     const traceId = generateTraceId();
     const startTime = Date.now();
 
     // If no client is provided, execute without tracing
     if (!client) {
+      logger.debug(ctx, `operation=with_tracing_execute node=${nodeName} tracing=disabled`);
       return nodeFunction(input);
     }
 
+    logger.debug(ctx, `operation=with_tracing_start node=${nodeName} job_id=${input.job_id}`);
+
     try {
       const output = await nodeFunction(input);
+      const durationMs = Date.now() - startTime;
 
-      await client.trace({
+      await client.trace(ctx, {
         trace_id: traceId,
         job_id: input.job_id,
         timestamp: new Date(),
@@ -371,12 +408,16 @@ export function withTracing<TInput extends TraceableInput, TOutput>(
         step: "execute",
         input: sanitize(input),
         output: sanitize(output),
-        duration_ms: Date.now() - startTime,
+        duration_ms: durationMs,
       });
+
+      logger.debug(ctx, `operation=with_tracing_complete node=${nodeName} duration_ms=${durationMs}`);
 
       return output;
     } catch (error) {
-      await client.trace({
+      const durationMs = Date.now() - startTime;
+
+      await client.trace(ctx, {
         trace_id: traceId,
         job_id: input.job_id,
         timestamp: new Date(),
@@ -384,8 +425,11 @@ export function withTracing<TInput extends TraceableInput, TOutput>(
         step: "error",
         input: sanitize(input),
         output: { error: error instanceof Error ? error.message : "Unknown error" },
-        duration_ms: Date.now() - startTime,
+        duration_ms: durationMs,
       });
+
+      logger.error(ctx, `operation=with_tracing_error node=${nodeName} duration_ms=${durationMs}`, error instanceof Error ? error : new Error(String(error)));
+
       throw error;
     }
   };
@@ -484,23 +528,28 @@ export function extractFailedCriteria(
  * - GALILEO_PROJECT_ID
  * - GALILEO_ENVIRONMENT (optional, defaults to "production")
  *
+ * @param ctx - Request context for tracing
  * @returns GalileoClient instance
  * @throws Error if required environment variables are missing
  */
-export function createGalileoClientFromEnv(): GalileoClient {
+export function createGalileoClientFromEnv(ctx: RequestContext): GalileoClient {
+  logger.debug(ctx, `operation=create_client_from_env`);
+
   const apiKey = process.env.GALILEO_API_KEY;
   const projectId = process.env.GALILEO_PROJECT_ID;
   const environment = process.env.GALILEO_ENVIRONMENT as "development" | "production" | undefined;
 
   if (!apiKey) {
+    logger.error(ctx, `operation=create_client_from_env_failed reason=missing_api_key`);
     throw new Error("GALILEO_API_KEY environment variable is not defined");
   }
 
   if (!projectId) {
+    logger.error(ctx, `operation=create_client_from_env_failed reason=missing_project_id`);
     throw new Error("GALILEO_PROJECT_ID environment variable is not defined");
   }
 
-  return createGalileoClient({
+  return createGalileoClient(ctx, {
     apiKey,
     projectId,
     environment,

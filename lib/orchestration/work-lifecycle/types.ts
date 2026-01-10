@@ -10,6 +10,7 @@
  * @see /docs/designs/orchestration/work-lifecycle/TECH_DESIGN.md
  */
 
+import type { RequestContext } from "@/lib/logging";
 import type {
   WorkItem,
   WorkItemStatus,
@@ -196,6 +197,23 @@ export interface Transition<T extends TransitionTrigger = TransitionTrigger> {
   guardName?: string;
   execute: (work: WorkItem, payload: PayloadFor<T>) => Partial<WorkItem>;
 }
+
+/**
+ * Helper to create a typed transition.
+ * This preserves the specific trigger type for proper payload inference.
+ */
+export function defineTransition<T extends TransitionTrigger>(
+  transition: Transition<T>
+): Transition<T> {
+  return transition;
+}
+
+/**
+ * Type for the transitions array - allows any trigger type.
+ */
+export type AnyTransition = {
+  [K in TransitionTrigger]: Transition<K>;
+}[TransitionTrigger];
 
 // =============================================================================
 // TRANSITION RESULT
@@ -427,17 +445,20 @@ export const MAX_REASSIGNMENTS = 2;
 /**
  * WorkLifecycle interface - the main API for work item state management.
  * All methods use DatabaseClient internally (injected via constructor).
+ * All public methods take RequestContext as the first argument for tracing.
  */
 export interface IWorkLifecycle {
   /**
    * Execute a state transition for a work item.
    * Uses typed triggers and payloads.
    *
+   * @param ctx - Request context for tracing
    * @param work_id - The work item ID
    * @param trigger - The transition trigger
    * @param payload - Optional payload (type depends on trigger)
    */
   transition<T extends TransitionTrigger>(
+    ctx: RequestContext,
     work_id: string,
     trigger: T,
     payload?: PayloadFor<T>
@@ -447,40 +468,45 @@ export interface IWorkLifecycle {
    * Get all work items that are ready for execution.
    * Returns items in "ready" status for the given job.
    *
+   * @param ctx - Request context for tracing
    * @param job_id - The job ID
    */
-  getActionable(job_id: string): Promise<WorkItem[]>;
+  getActionable(ctx: RequestContext, job_id: string): Promise<WorkItem[]>;
 
   /**
    * Check if a work item can retry for a specific retry type.
    *
+   * @param ctx - Request context for tracing
    * @param work_id - The work item ID
    * @param type - The type of retry to check
    */
-  canRetry(work_id: string, type: RetryType): Promise<boolean>;
+  canRetry(ctx: RequestContext, work_id: string, type: RetryType): Promise<boolean>;
 
   /**
    * Spawn new TODO items from a parent TODO.
    *
+   * @param ctx - Request context for tracing
    * @param request - The spawn request
    */
-  spawnTodos(request: SpawnRequest): Promise<SpawnResult>;
+  spawnTodos(ctx: RequestContext, request: SpawnRequest): Promise<SpawnResult>;
 
   /**
    * Check if a work item's dependencies are satisfied.
    * If all dependencies are completed, transitions to "ready".
    *
+   * @param ctx - Request context for tracing
    * @param work_id - The work item to check
    * @param plan - The plan containing action items
    */
-  checkDependencies(work_id: string, plan: Plan): Promise<void>;
+  checkDependencies(ctx: RequestContext, work_id: string, plan: Plan): Promise<void>;
 
   /**
    * Called when a work item completes.
    * Checks all pending items that depend on this one.
    *
+   * @param ctx - Request context for tracing
    * @param work_id - The completed work item ID
    * @param plan - The plan containing action items
    */
-  onWorkCompleted(work_id: string, plan: Plan): Promise<void>;
+  onWorkCompleted(ctx: RequestContext, work_id: string, plan: Plan): Promise<void>;
 }

@@ -8,6 +8,8 @@
  */
 
 import type { VoyageAIClient } from "voyageai";
+import type { RequestContext } from "@/lib/logging";
+import { createLogger } from "@/lib/logging";
 import type { VectorSearchResult, RerankResult, RerankResponse } from "./types";
 import {
   generateOperationId,
@@ -15,6 +17,8 @@ import {
   estimateRerankTokens,
 } from "./utils";
 import { getVoyageClient } from "./embeddings";
+
+const logger = createLogger("discovery");
 
 // =============================================================================
 // RERANKING FUNCTIONS
@@ -24,6 +28,7 @@ import { getVoyageClient } from "./embeddings";
  * Rerank vector search candidates using Voyage AI rerank-2 model.
  * Provides more accurate relevance scoring than vector similarity alone.
  *
+ * @param ctx - Request context for tracing
  * @param query - The original search query
  * @param candidates - Vector search results to rerank
  * @param topK - Number of top results to return (default 10)
@@ -31,6 +36,7 @@ import { getVoyageClient } from "./embeddings";
  * @returns RerankResponse with reranked results and operation details
  */
 export async function rerankCandidates(
+  ctx: RequestContext,
   query: string,
   candidates: VectorSearchResult[],
   topK: number = 10,
@@ -41,6 +47,7 @@ export async function rerankCandidates(
   // Prepare documents for reranking (use capabilities text)
   const documents = candidates.map((c) => c.capabilities);
 
+  const startTime = Date.now();
   const result = await voyageClient.rerank({
     query: query,
     documents: documents,
@@ -48,9 +55,11 @@ export async function rerankCandidates(
     topK: Math.min(topK, candidates.length),
     returnDocuments: false, // We already have the documents
   });
+  const durationMs = Date.now() - startTime;
 
   // Map rerank results back to candidates with relevance scores
   if (!result.data || result.data.length === 0) {
+    logger.info(ctx, `operation=rerank input_count=${candidates.length} output_count=0 duration_ms=${durationMs}`);
     return {
       results: [],
       operation: {
@@ -87,6 +96,8 @@ export async function rerankCandidates(
   // Calculate estimated tokens for cost tracking
   const estimatedTokens = estimateRerankTokens(query, documents);
 
+  logger.info(ctx, `operation=rerank input_count=${candidates.length} output_count=${results.length} tokens=${estimatedTokens} duration_ms=${durationMs}`);
+
   return {
     results,
     operation: {
@@ -109,6 +120,7 @@ export async function rerankCandidates(
  * Simple rerank without full operation tracking.
  * Returns just the reranked results for simpler use cases.
  *
+ * @param ctx - Request context for tracing
  * @param query - The original search query
  * @param candidates - Vector search results to rerank
  * @param topK - Number of top results to return
@@ -116,11 +128,12 @@ export async function rerankCandidates(
  * @returns Array of reranked results
  */
 export async function simpleRerank(
+  ctx: RequestContext,
   query: string,
   candidates: VectorSearchResult[],
   topK: number = 10,
   client?: VoyageAIClient
 ): Promise<RerankResult[]> {
-  const response = await rerankCandidates(query, candidates, topK, client);
+  const response = await rerankCandidates(ctx, query, candidates, topK, client);
   return response.results;
 }

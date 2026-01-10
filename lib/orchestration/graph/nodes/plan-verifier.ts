@@ -11,7 +11,11 @@ import OpenAI from "openai";
 import { nanoid } from "nanoid";
 import type { LLMOperation, ActionItem, Agent, PromptTemplate } from "@/types";
 import { withTracing } from "@/lib/galileo";
+import type { RequestContext } from "@/lib/logging";
+import { createLogger } from "@/lib/logging";
 import type { OrchestrationState, PlanningAgentOutput, PlanVerifierOutput } from "../types";
+
+const logger = createLogger("graph");
 
 // =============================================================================
 // OPENROUTER CLIENT
@@ -406,7 +410,6 @@ function formatVerifierInput(input: PlanVerifierInput): string {
   const sections: string[] = [];
 
   sections.push(`## Plan to Verify`);
-  sections.push(`Plan ID: ${input.plan.plan_id}`);
   sections.push(`Budget: $${input.budget.toFixed(2)}`);
 
   sections.push(`\n## Deliverables`);
@@ -445,9 +448,14 @@ function formatVerifierInput(input: PlanVerifierInput): string {
  * Plan Verifier Node Implementation
  *
  * MANDATORY GATE - validates plan before execution.
+ *
+ * @param ctx - Request context for logging
+ * @param state - Current graph state
+ * @returns Partial state update
  */
-async function planVerifierNodeImpl(state: OrchestrationState): Promise<Partial<OrchestrationState>> {
+async function planVerifierNodeImpl(ctx: RequestContext, state: OrchestrationState): Promise<Partial<OrchestrationState>> {
   if (!state.plan) {
+    logger.warn(ctx, `operation=plan_verify job_id=${state.job_id} result=fail reason=no_plan`);
     return {
       plan_verification: {
         result: "FAIL",
@@ -460,6 +468,7 @@ async function planVerifierNodeImpl(state: OrchestrationState): Promise<Partial<
   }
 
   const attempts = state.plan_verification_attempts + 1;
+  logger.info(ctx, `operation=plan_verify job_id=${state.job_id} attempt=${attempts}`);
 
   // Build verification input
   const verifierInput: PlanVerifierInput = {
@@ -481,6 +490,7 @@ async function planVerifierNodeImpl(state: OrchestrationState): Promise<Partial<
 
   // Handle PASS
   if (verification.result === "PASS") {
+    logger.info(ctx, `operation=plan_verify job_id=${state.job_id} result=pass attempts=${attempts}`);
     return {
       plan_verification: planVerification,
       plan_verification_attempts: attempts,
@@ -492,6 +502,7 @@ async function planVerifierNodeImpl(state: OrchestrationState): Promise<Partial<
 
   // Handle FAIL - check max attempts
   if (attempts >= MAX_PLAN_VERIFICATION_ATTEMPTS) {
+    logger.warn(ctx, `operation=plan_verify job_id=${state.job_id} result=fail reason=max_attempts attempts=${attempts}`);
     return {
       plan_verification: planVerification,
       plan_verification_attempts: attempts,
@@ -503,6 +514,7 @@ async function planVerifierNodeImpl(state: OrchestrationState): Promise<Partial<
   }
 
   // FAIL with retries remaining - send feedback to Planning Agent
+  logger.info(ctx, `operation=plan_verify job_id=${state.job_id} result=fail attempts=${attempts} issues_count=${verification.issues.length}`);
   return {
     plan_verification: planVerification,
     plan_verification_attempts: attempts,
@@ -513,12 +525,12 @@ async function planVerifierNodeImpl(state: OrchestrationState): Promise<Partial<
 }
 
 /**
- * Exported plan verifier node with tracing
+ * Exported plan verifier node (without tracing wrapper - tracing applied in graph.ts)
  */
-export const planVerifierNode = withTracing("plan_verifier", planVerifierNodeImpl);
+export const planVerifierNode = planVerifierNodeImpl;
 
 /**
- * Re-export for direct use without tracing
+ * Re-export for direct use
  */
 export { planVerifierNodeImpl };
 

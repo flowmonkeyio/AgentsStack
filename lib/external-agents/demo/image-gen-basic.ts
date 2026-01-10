@@ -7,6 +7,7 @@
  * @see /docs/designs/external-agents/TECH_DESIGN.md
  */
 
+import { RequestContext, createLogger } from '@/lib/logging';
 import type {
   AgentExecuteRequest,
   AgentExecuteResponseAsync,
@@ -14,6 +15,8 @@ import type {
   AgentRegistration,
   AgentUsage,
 } from '../types';
+
+const logger = createLogger('external-agents');
 
 export const imageGenBasicConfig: AgentRegistration = {
   name: 'ImageGenBasic',
@@ -42,6 +45,7 @@ interface TaskState {
   error?: string;
   usage: AgentUsage;
   callback_url?: string;
+  ctx?: RequestContext;
 }
 
 interface FireworksImageResponse {
@@ -59,18 +63,21 @@ export class ImageGenBasicAgent {
     this.fireworksApiKey = fireworksApiKey;
   }
 
-  async execute(request: AgentExecuteRequest): Promise<AgentExecuteResponseAsync> {
+  async execute(ctx: RequestContext, request: AgentExecuteRequest): Promise<AgentExecuteResponseAsync> {
     const referenceId = crypto.randomUUID();
+
+    logger.info(ctx, `operation=execute agent_id=ImageGenBasic request_id=${request.request_id} mode=async reference_id=${referenceId}`);
 
     this.tasks.set(referenceId, {
       status: 'processing',
       progress: 0,
       callback_url: request.callback_url,
       usage: { total_cost: 0.02 },
+      ctx, // Store ctx for async processing
     });
 
     // Start async processing
-    this.processImage(referenceId, request.prompt, request.callback_url);
+    this.processImage(ctx, referenceId, request.prompt, request.callback_url);
 
     return {
       status: 'accepted',
@@ -81,9 +88,14 @@ export class ImageGenBasicAgent {
     };
   }
 
-  getStatus(referenceId: string): AgentStatusResponse | null {
+  getStatus(ctx: RequestContext, referenceId: string): AgentStatusResponse | null {
     const task = this.tasks.get(referenceId);
-    if (!task) return null;
+    if (!task) {
+      logger.debug(ctx, `operation=get_status agent_id=ImageGenBasic reference_id=${referenceId} status=not_found`);
+      return null;
+    }
+
+    logger.debug(ctx, `operation=get_status agent_id=ImageGenBasic reference_id=${referenceId} status=${task.status}`);
 
     if (task.status === 'processing') {
       return {
@@ -109,12 +121,15 @@ export class ImageGenBasicAgent {
   }
 
   private async processImage(
+    ctx: RequestContext,
     referenceId: string,
     prompt: string,
     callbackUrl?: string
   ): Promise<void> {
+    const startTime = Date.now();
     try {
       this.updateTask(referenceId, { progress: 0.3 });
+      logger.debug(ctx, `operation=process_image agent_id=ImageGenBasic reference_id=${referenceId} progress=0.3`);
 
       // Use faster, cheaper model
       const response = await fetch('https://api.fireworks.ai/inference/v1/image_generation', {
@@ -137,6 +152,7 @@ export class ImageGenBasicAgent {
       }
 
       this.updateTask(referenceId, { progress: 0.8 });
+      logger.debug(ctx, `operation=process_image agent_id=ImageGenBasic reference_id=${referenceId} progress=0.8`);
 
       const data: FireworksImageResponse = await response.json();
       const imageUrl = data.data[0].url;
@@ -160,8 +176,11 @@ export class ImageGenBasicAgent {
       };
       this.tasks.set(referenceId, completedTask);
 
+      const durationMs = Date.now() - startTime;
+      logger.debug(ctx, `operation=process_image_complete agent_id=ImageGenBasic reference_id=${referenceId} duration_ms=${durationMs}`);
+
       if (callbackUrl) {
-        await this.sendCallback(callbackUrl, referenceId, completedTask);
+        await this.sendCallback(ctx, callbackUrl, referenceId, completedTask);
       }
     } catch (error) {
       const task = this.tasks.get(referenceId);
@@ -173,8 +192,10 @@ export class ImageGenBasicAgent {
         error: error instanceof Error ? error.message : 'Unknown error',
       });
 
+      logger.error(ctx, `operation=process_image_failed agent_id=ImageGenBasic reference_id=${referenceId} error_code=FIREWORKS_API_ERROR`, error instanceof Error ? error : new Error('Unknown error'));
+
       if (callbackUrl) {
-        await this.sendCallback(callbackUrl, referenceId, this.tasks.get(referenceId)!);
+        await this.sendCallback(ctx, callbackUrl, referenceId, this.tasks.get(referenceId)!);
       }
     }
   }
@@ -187,11 +208,13 @@ export class ImageGenBasicAgent {
   }
 
   private async sendCallback(
+    ctx: RequestContext,
     callbackUrl: string,
     referenceId: string,
     task: TaskState
   ): Promise<void> {
     try {
+      logger.debug(ctx, `operation=send_callback agent_id=ImageGenBasic reference_id=${referenceId} callback_url=${callbackUrl}`);
       await fetch(callbackUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -203,8 +226,8 @@ export class ImageGenBasicAgent {
           usage: task.usage,
         }),
       });
-    } catch {
-      console.error(`Callback to ${callbackUrl} failed`);
+    } catch (error) {
+      logger.error(ctx, `operation=send_callback_failed agent_id=ImageGenBasic reference_id=${referenceId} callback_url=${callbackUrl}`, error instanceof Error ? error : new Error('Unknown error'));
     }
   }
 }

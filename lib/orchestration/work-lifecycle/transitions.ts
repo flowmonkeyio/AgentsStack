@@ -8,19 +8,11 @@
  */
 
 import type { WorkItem } from "@/types";
-import type {
-  Transition,
-  PromptGeneratedPayload,
-  AsyncResponsePayload,
-  SyncResponsePayload,
-  PollCompletedPayload,
-  VerificationPayload,
-  VerificationRetryPayload,
-  TryNewAgentPayload,
-  AgentReassignedPayload,
-  PaymentConfirmedPayload,
-  SpawnTrigger,
-  SpawnableOutput,
+import {
+  defineTransition,
+  type AnyTransition,
+  type SpawnTrigger,
+  type SpawnableOutput,
 } from "./types";
 
 // =============================================================================
@@ -35,38 +27,37 @@ import type {
  * - optional guard condition
  * - execute function that returns field updates
  */
-export const TRANSITIONS: Transition[] = [
+export const TRANSITIONS: AnyTransition[] = [
   // -------------------------------------------------------------------------
   // pending -> ready
   // -------------------------------------------------------------------------
-  {
+  defineTransition({
     from: "pending",
     to: "ready",
     trigger: "dependencies_met",
     execute: () => ({}),
-  },
+  }),
 
   // -------------------------------------------------------------------------
   // ready -> prompting
   // -------------------------------------------------------------------------
-  {
+  defineTransition({
     from: "ready",
     to: "prompting",
     trigger: "picked_up",
     execute: () => ({ started_at: new Date() }),
-  },
+  }),
 
   // -------------------------------------------------------------------------
   // prompting -> dispatched
   // -------------------------------------------------------------------------
-  {
+  defineTransition({
     from: "prompting",
     to: "dispatched",
     trigger: "prompt_generated",
-    guard: (_work: WorkItem, payload: PromptGeneratedPayload) =>
-      payload.generated_prompt.length > 0,
+    guard: (_work, payload) => payload.generated_prompt.length > 0,
     guardName: "has_prompt",
-    execute: (_work: WorkItem, payload: PromptGeneratedPayload) => ({
+    execute: (_work, payload) => ({
       prompt: {
         template_id: "", // Set by caller
         generated_prompt: payload.generated_prompt,
@@ -74,16 +65,16 @@ export const TRANSITIONS: Transition[] = [
         generated_at: new Date(),
       },
     }),
-  },
+  }),
 
   // -------------------------------------------------------------------------
   // dispatched -> polling (async response)
   // -------------------------------------------------------------------------
-  {
+  defineTransition({
     from: "dispatched",
     to: "polling",
     trigger: "async_response",
-    execute: (_work: WorkItem, payload: AsyncResponsePayload) => ({
+    execute: (_work, payload) => ({
       external_ref: {
         reference_id: payload.reference_id,
         status_url: payload.status_url,
@@ -104,40 +95,40 @@ export const TRANSITIONS: Transition[] = [
         last_error: null,
       },
     }),
-  },
+  }),
 
   // -------------------------------------------------------------------------
   // dispatched -> received (sync response)
   // -------------------------------------------------------------------------
-  {
+  defineTransition({
     from: "dispatched",
     to: "received",
     trigger: "sync_response",
-    execute: (_work: WorkItem, payload: SyncResponsePayload) => ({
+    execute: (_work, payload) => ({
       output: payload.output,
     }),
-  },
+  }),
 
   // -------------------------------------------------------------------------
   // polling -> received
   // -------------------------------------------------------------------------
-  {
+  defineTransition({
     from: "polling",
     to: "received",
     trigger: "poll_completed",
-    execute: (_work: WorkItem, payload: PollCompletedPayload) => ({
+    execute: (_work, payload) => ({
       output: payload.output,
     }),
-  },
+  }),
 
   // -------------------------------------------------------------------------
   // polling -> stale
   // -------------------------------------------------------------------------
-  {
+  defineTransition({
     from: "polling",
     to: "stale",
     trigger: "poll_timeout",
-    execute: (work: WorkItem) => ({
+    execute: (work) => ({
       external_ref: work.external_ref
         ? {
             ...work.external_ref,
@@ -145,22 +136,22 @@ export const TRANSITIONS: Transition[] = [
           }
         : null,
     }),
-  },
+  }),
 
   // -------------------------------------------------------------------------
   // stale -> dispatched (retry)
   // Stale retry count is tracked via retries array length with reason "stale"
   // -------------------------------------------------------------------------
-  {
+  defineTransition({
     from: "stale",
     to: "dispatched",
     trigger: "retry_dispatch",
-    guard: (work: WorkItem) => {
+    guard: (work) => {
       const staleRetries = work.retries.filter((r) => r.reason === "stale").length;
       return staleRetries < 3;
     },
     guardName: "stale_retries_remaining",
-    execute: (work: WorkItem) => ({
+    execute: (work) => ({
       external_ref: work.external_ref
         ? {
             ...work.external_ref,
@@ -185,16 +176,16 @@ export const TRANSITIONS: Transition[] = [
         },
       ],
     }),
-  },
+  }),
 
   // -------------------------------------------------------------------------
   // stale -> failed (max retries)
   // -------------------------------------------------------------------------
-  {
+  defineTransition({
     from: "stale",
     to: "failed",
     trigger: "max_stale_retries",
-    guard: (work: WorkItem) => {
+    guard: (work) => {
       const staleRetries = work.retries.filter((r) => r.reason === "stale").length;
       return staleRetries >= 3;
     },
@@ -202,28 +193,28 @@ export const TRANSITIONS: Transition[] = [
     execute: () => ({
       completed_at: new Date(),
     }),
-  },
+  }),
 
   // -------------------------------------------------------------------------
   // received -> verifying
   // -------------------------------------------------------------------------
-  {
+  defineTransition({
     from: "received",
     to: "verifying",
     trigger: "start_verification",
     execute: () => ({}),
-  },
+  }),
 
   // -------------------------------------------------------------------------
   // verifying -> verified (pass)
   // -------------------------------------------------------------------------
-  {
+  defineTransition({
     from: "verifying",
     to: "verified",
     trigger: "verification_pass",
-    guard: (_work: WorkItem, payload: VerificationPayload) => payload.score >= 0.9,
+    guard: (_work, payload) => payload.score >= 0.9,
     guardName: "score_passes",
-    execute: (_work: WorkItem, payload: VerificationPayload) => ({
+    execute: (_work, payload) => ({
       verification: {
         score: payload.score,
         reasoning: payload.reasoning,
@@ -232,19 +223,19 @@ export const TRANSITIONS: Transition[] = [
         verified_at: new Date(),
       },
     }),
-  },
+  }),
 
   // -------------------------------------------------------------------------
   // verifying -> retry_pending
   // -------------------------------------------------------------------------
-  {
+  defineTransition({
     from: "verifying",
     to: "retry_pending",
     trigger: "verification_retry",
-    guard: (work: WorkItem, payload: VerificationRetryPayload) =>
+    guard: (work, payload) =>
       payload.score >= 0.6 && payload.score < 0.9 && work.attempt < work.max_attempts,
     guardName: "retriable_score_and_attempts",
-    execute: (work: WorkItem, payload: VerificationRetryPayload) => ({
+    execute: (work, payload) => ({
       verification: {
         score: payload.score,
         reasoning: payload.reasoning,
@@ -269,19 +260,19 @@ export const TRANSITIONS: Transition[] = [
         },
       },
     }),
-  },
+  }),
 
   // -------------------------------------------------------------------------
   // verifying -> rejected
   // -------------------------------------------------------------------------
-  {
+  defineTransition({
     from: "verifying",
     to: "rejected",
     trigger: "verification_reject",
-    guard: (work: WorkItem, payload: VerificationPayload) =>
+    guard: (work, payload) =>
       payload.score < 0.6 || work.attempt >= work.max_attempts,
     guardName: "low_score_or_max_attempts",
-    execute: (_work: WorkItem, payload: VerificationPayload) => ({
+    execute: (_work, payload) => ({
       verification: {
         score: payload.score,
         reasoning: payload.reasoning,
@@ -290,16 +281,16 @@ export const TRANSITIONS: Transition[] = [
         verified_at: new Date(),
       },
     }),
-  },
+  }),
 
   // -------------------------------------------------------------------------
   // retry_pending -> prompting
   // -------------------------------------------------------------------------
-  {
+  defineTransition({
     from: "retry_pending",
     to: "prompting",
     trigger: "retry_initiated",
-    execute: (work: WorkItem) => ({
+    execute: (work) => ({
       attempt: work.attempt + 1,
       retries: [
         ...work.retries,
@@ -314,41 +305,41 @@ export const TRANSITIONS: Transition[] = [
         },
       ],
     }),
-  },
+  }),
 
   // -------------------------------------------------------------------------
   // rejected -> reassigning
   // -------------------------------------------------------------------------
-  {
+  defineTransition({
     from: "rejected",
     to: "reassigning",
     trigger: "try_new_agent",
-    guard: (_work: WorkItem, payload: TryNewAgentPayload) =>
+    guard: (_work, payload) =>
       payload.alternative_agents.length > 0,
     guardName: "alternatives_available",
     execute: () => ({}),
-  },
+  }),
 
   // -------------------------------------------------------------------------
   // rejected -> failed (no alternatives)
   // -------------------------------------------------------------------------
-  {
+  defineTransition({
     from: "rejected",
     to: "failed",
     trigger: "no_alternatives",
     execute: () => ({
       completed_at: new Date(),
     }),
-  },
+  }),
 
   // -------------------------------------------------------------------------
   // reassigning -> prompting
   // -------------------------------------------------------------------------
-  {
+  defineTransition({
     from: "reassigning",
     to: "prompting",
     trigger: "agent_reassigned",
-    execute: (work: WorkItem, payload: AgentReassignedPayload) => ({
+    execute: (work, payload) => ({
       agent: payload.new_agent,
       attempt: 1, // Reset attempts for new agent
       retries: [
@@ -363,16 +354,16 @@ export const TRANSITIONS: Transition[] = [
         },
       ],
     }),
-  },
+  }),
 
   // -------------------------------------------------------------------------
   // verified -> paying
   // -------------------------------------------------------------------------
-  {
+  defineTransition({
     from: "verified",
     to: "paying",
     trigger: "start_payment",
-    execute: (work: WorkItem) => ({
+    execute: (work) => ({
       payment: {
         status: "processing" as const,
         amount: work.agent?.price ?? 0,
@@ -385,16 +376,16 @@ export const TRANSITIONS: Transition[] = [
         confirmed_at: null,
       },
     }),
-  },
+  }),
 
   // -------------------------------------------------------------------------
   // paying -> completed
   // -------------------------------------------------------------------------
-  {
+  defineTransition({
     from: "paying",
     to: "completed",
     trigger: "payment_confirmed",
-    execute: (work: WorkItem, payload: PaymentConfirmedPayload) => ({
+    execute: (work, payload) => ({
       payment: work.payment
         ? {
             ...work.payment,
@@ -406,18 +397,18 @@ export const TRANSITIONS: Transition[] = [
         : null,
       completed_at: new Date(),
     }),
-  },
+  }),
 
   // -------------------------------------------------------------------------
   // paying -> payment_retry
   // -------------------------------------------------------------------------
-  {
+  defineTransition({
     from: "paying",
     to: "payment_retry",
     trigger: "payment_failed",
-    guard: (work: WorkItem) => (work.payment?.retry_count ?? 0) < 3,
+    guard: (work) => (work.payment?.retry_count ?? 0) < 3,
     guardName: "payment_retries_remaining",
-    execute: (work: WorkItem) => ({
+    execute: (work) => ({
       payment: work.payment
         ? {
             ...work.payment,
@@ -427,16 +418,16 @@ export const TRANSITIONS: Transition[] = [
           }
         : null,
     }),
-  },
+  }),
 
   // -------------------------------------------------------------------------
   // payment_retry -> paying
   // -------------------------------------------------------------------------
-  {
+  defineTransition({
     from: "payment_retry",
     to: "paying",
     trigger: "retry_payment",
-    execute: (work: WorkItem) => ({
+    execute: (work) => ({
       payment: work.payment
         ? {
             ...work.payment,
@@ -445,16 +436,16 @@ export const TRANSITIONS: Transition[] = [
           }
         : null,
     }),
-  },
+  }),
 
   // -------------------------------------------------------------------------
   // payment_retry -> failed
   // -------------------------------------------------------------------------
-  {
+  defineTransition({
     from: "payment_retry",
     to: "failed",
     trigger: "max_payment_retries",
-    execute: (work: WorkItem) => ({
+    execute: (work) => ({
       payment: work.payment
         ? {
             ...work.payment,
@@ -464,7 +455,7 @@ export const TRANSITIONS: Transition[] = [
         : null,
       completed_at: new Date(),
     }),
-  },
+  }),
 ];
 
 // =============================================================================
@@ -524,7 +515,7 @@ export const SPAWN_TRIGGERS: SpawnTrigger[] = [
 export function findTransition(
   from: WorkItem["status"],
   trigger: string
-): Transition | null {
+): AnyTransition | null {
   return TRANSITIONS.find((t) => t.from === from && t.trigger === trigger) ?? null;
 }
 

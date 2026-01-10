@@ -8,7 +8,10 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { getDatabaseClient } from "@/lib/db";
+import { createContext, createLogger } from "@/lib/logging";
 import type { AgentCallbackResponse, ErrorResponse } from "@/types/api";
+
+const logger = createLogger("api");
 
 // Agent callback request type (inline to avoid dependency on types/api.ts for webhook)
 interface AgentCallbackRequest {
@@ -28,14 +31,17 @@ export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ workId: string }> }
 ): Promise<NextResponse<AgentCallbackResponse | ErrorResponse>> {
-  try {
-    const { workId } = await params;
+  const ctx = createContext();
+  const { workId } = await params;
+  logger.info(ctx, `operation=webhook work_id=${workId} started=true`);
 
+  try {
     // Parse request body
     let body: AgentCallbackRequest;
     try {
       body = await request.json();
     } catch {
+      logger.info(ctx, `operation=webhook work_id=${workId} status=invalid_json`);
       return NextResponse.json(
         { error: "Invalid JSON body", code: "INVALID_INPUT" },
         { status: 400 }
@@ -44,6 +50,7 @@ export async function POST(
 
     // Validate required fields
     if (!body.reference_id) {
+      logger.info(ctx, `operation=webhook work_id=${workId} status=missing_reference_id`);
       return NextResponse.json(
         {
           error: "Missing required field: reference_id",
@@ -55,6 +62,7 @@ export async function POST(
     }
 
     if (!body.status) {
+      logger.info(ctx, `operation=webhook work_id=${workId} status=missing_status`);
       return NextResponse.json(
         {
           error: "Missing required field: status",
@@ -67,6 +75,7 @@ export async function POST(
 
     // Validate status value
     if (!["completed", "failed", "progress"].includes(body.status)) {
+      logger.info(ctx, `operation=webhook work_id=${workId} status=invalid_status_value`);
       return NextResponse.json(
         {
           error: "Invalid status value",
@@ -85,6 +94,7 @@ export async function POST(
     const workItem = await db.getWorkItem(workId);
 
     if (!workItem) {
+      logger.info(ctx, `operation=webhook work_id=${workId} status=not_found`);
       return NextResponse.json(
         { error: "Work item not found", code: "NOT_FOUND" },
         { status: 404 }
@@ -93,6 +103,7 @@ export async function POST(
 
     // Validate reference_id matches (security check)
     if (workItem.external_ref?.reference_id !== body.reference_id) {
+      logger.info(ctx, `operation=webhook work_id=${workId} status=invalid_reference`);
       return NextResponse.json(
         { error: "Invalid reference_id", code: "INVALID_REFERENCE" },
         { status: 403 }
@@ -103,10 +114,10 @@ export async function POST(
     try {
       const { OrchestrationEngine } = await import("@/lib/orchestration");
       const orchestration = OrchestrationEngine.getInstance();
-      await orchestration.handleAgentCallback(workId, body);
+      await orchestration.handleAgentCallback(ctx, workId, body);
     } catch (orchestrationError) {
       // Log error but don't fail the webhook - we've received the data
-      console.error("Orchestration callback handling failed:", orchestrationError);
+      logger.error(ctx, `operation=webhook work_id=${workId} orchestration_status=failed`, orchestrationError instanceof Error ? orchestrationError : undefined);
       // Continue to return success - the webhook was received
     }
 
@@ -116,9 +127,10 @@ export async function POST(
       work_id: workId,
     };
 
+    logger.info(ctx, `operation=webhook work_id=${workId} callback_status=${body.status} status=received`);
     return NextResponse.json(response);
   } catch (error) {
-    console.error("Webhook error:", error);
+    logger.error(ctx, `operation=webhook work_id=${workId} status=failed`, error instanceof Error ? error : undefined);
     return NextResponse.json(
       { error: "Internal server error", code: "INTERNAL_ERROR" },
       { status: 500 }

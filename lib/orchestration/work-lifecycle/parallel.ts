@@ -7,6 +7,8 @@
  * @see /docs/designs/orchestration/work-lifecycle/TECH_DESIGN.md
  */
 
+import type { RequestContext } from "@/lib/logging";
+import { createLogger } from "@/lib/logging";
 import type { DatabaseClient } from "@/lib/db/database-client";
 import type {
   WorkItem,
@@ -27,6 +29,8 @@ import type {
 import { MAX_REASSIGNMENTS } from "./types";
 import { WorkLifecycle, type ExtendedDatabaseClient } from "./state-machine";
 
+const logger = createLogger("work-lifecycle");
+
 // =============================================================================
 // DEPENDENCY RESOLUTION
 // =============================================================================
@@ -35,33 +39,49 @@ import { WorkLifecycle, type ExtendedDatabaseClient } from "./state-machine";
  * Get action items that have all dependencies satisfied.
  * Uses Plan's action_items and a set of completed action item IDs.
  *
+ * @param ctx - Request context for tracing
  * @param plan - The plan containing action items
  * @param completedIds - Set of completed action item IDs
  * @returns Array of actionable items
  */
-export function getActionableTodos(plan: Plan, completedIds: Set<number>): ActionItem[] {
-  return plan.action_items.filter((item) => {
+export function getActionableTodos(
+  ctx: RequestContext,
+  plan: Plan,
+  completedIds: Set<number>
+): ActionItem[] {
+  const actionable = plan.action_items.filter((item) => {
     // Must be pending
     if (item.status !== "pending") return false;
 
     // All dependencies must be completed
     return item.depends_on.every((depId) => completedIds.has(depId));
   });
+
+  logger.debug(ctx, `operation=get_actionable_todos plan_id=${plan.plan_id} total_items=${plan.action_items.length} actionable_count=${actionable.length}`);
+
+  return actionable;
 }
 
 /**
  * Build a set of completed action item IDs from work items.
  *
+ * @param ctx - Request context for tracing
  * @param workItems - Array of work items
  * @returns Set of completed action item IDs
  */
-export function getCompletedActionItemIds(workItems: WorkItem[]): Set<number> {
+export function getCompletedActionItemIds(
+  ctx: RequestContext,
+  workItems: WorkItem[]
+): Set<number> {
   const completedIds = new Set<number>();
   for (const work of workItems) {
     if (work.status === "completed") {
       completedIds.add(work.action_item_id);
     }
   }
+
+  logger.debug(ctx, `operation=get_completed_action_item_ids total_work_items=${workItems.length} completed_count=${completedIds.size}`);
+
   return completedIds;
 }
 
@@ -78,16 +98,20 @@ export type ExecuteWorkItemFn = (work: WorkItem) => Promise<WorkExecutionResult>
  * Execute multiple work items in parallel.
  * Uses Promise.allSettled to ensure all items are attempted regardless of failures.
  *
+ * @param ctx - Request context for tracing
  * @param lifecycle - WorkLifecycle instance for transitions
  * @param workItems - Work items to execute in parallel
  * @param executeWorkItem - Function that executes a single work item
  * @returns Array of execution results
  */
 export async function executeParallel(
+  ctx: RequestContext,
   lifecycle: WorkLifecycle,
   workItems: WorkItem[],
   executeWorkItem: ExecuteWorkItemFn
 ): Promise<WorkExecutionResult[]> {
+  logger.info(ctx, `operation=execute_parallel_start work_item_count=${workItems.length}`);
+
   // Execute all items in parallel
   const promises = workItems.map((work) =>
     executeWorkItem(work).catch((error: Error) => ({
@@ -101,14 +125,24 @@ export async function executeParallel(
   const executionResults: WorkExecutionResult[] = [];
 
   // Process results
+  let successCount = 0;
+  let failureCount = 0;
   for (const result of results) {
     if (result.status === "fulfilled") {
       executionResults.push(result.value);
+      if (result.value.success) {
+        successCount++;
+      } else {
+        failureCount++;
+      }
     } else {
       // Unexpected rejection (executeWorkItem should not throw)
-      console.error("Unexpected rejection in parallel execution:", result.reason);
+      logger.error(ctx, `operation=execute_parallel error=unexpected_rejection reason=${result.reason}`);
+      failureCount++;
     }
   }
+
+  logger.info(ctx, `operation=execute_parallel_complete total=${workItems.length} success=${successCount} failed=${failureCount}`);
 
   return executionResults;
 }
@@ -116,6 +150,7 @@ export async function executeParallel(
 /**
  * Get ready work items for a job and execute them in parallel.
  *
+ * @param ctx - Request context for tracing
  * @param db - Extended DatabaseClient instance
  * @param lifecycle - WorkLifecycle instance
  * @param job_id - The job ID
@@ -123,20 +158,24 @@ export async function executeParallel(
  * @returns Array of execution results
  */
 export async function executeReadyWorkItems(
+  ctx: RequestContext,
   db: ExtendedDatabaseClient,
   lifecycle: WorkLifecycle,
   job_id: string,
   executeWorkItem: ExecuteWorkItemFn
 ): Promise<WorkExecutionResult[]> {
   // Get all ready work items
-  const readyItems = await lifecycle.getActionable(job_id);
+  const readyItems = await lifecycle.getActionable(ctx, job_id);
 
   if (readyItems.length === 0) {
+    logger.debug(ctx, `operation=execute_ready_work_items job_id=${job_id} ready_count=0`);
     return [];
   }
 
+  logger.info(ctx, `operation=execute_ready_work_items job_id=${job_id} ready_count=${readyItems.length}`);
+
   // Execute in parallel
-  return executeParallel(lifecycle, readyItems, executeWorkItem);
+  return executeParallel(ctx, lifecycle, readyItems, executeWorkItem);
 }
 
 // =============================================================================
@@ -147,11 +186,13 @@ export async function executeReadyWorkItems(
  * Find an alternative agent for a failed work item.
  * Excludes agents that have already failed and applies quality/capability filters.
  *
+ * @param ctx - Request context for tracing
  * @param work - The work item that needs a new agent
  * @param availableAgents - List of all available agents
  * @returns The best alternative agent or null if none found
  */
 export function findAlternativeAgent(
+  ctx: RequestContext,
   work: WorkItem,
   availableAgents: Agent[]
 ): Agent | null {
@@ -182,35 +223,50 @@ export function findAlternativeAgent(
     return true;
   });
 
-  if (candidates.length === 0) return null;
+  if (candidates.length === 0) {
+    logger.warn(ctx, `operation=find_alternative_agent work_id=${work.work_id} available_count=${availableAgents.length} excluded_count=${failedAgentIds.length} candidates=0`);
+    return null;
+  }
 
   // Sort by quality (since previous agent failed, prioritize quality)
   candidates.sort((a, b) => b.stats.avg_score - a.stats.avg_score);
 
-  return candidates[0];
+  const selected = candidates[0];
+  logger.info(ctx, `operation=find_alternative_agent work_id=${work.work_id} selected_agent=${selected.agent_id} score=${selected.stats.avg_score}`);
+
+  return selected;
 }
 
 /**
  * Check if a work item can be reassigned to a new agent.
  * Limited by MAX_REASSIGNMENTS.
  *
+ * @param ctx - Request context for tracing
  * @param work - The work item
  * @returns True if reassignment is possible
  */
-export function canReassign(work: WorkItem): boolean {
+export function canReassign(ctx: RequestContext, work: WorkItem): boolean {
   const reassignmentCount = work.retries.filter(
     (r) => r.reason === "reassignment"
   ).length;
-  return reassignmentCount < MAX_REASSIGNMENTS;
+  const canReassignResult = reassignmentCount < MAX_REASSIGNMENTS;
+
+  logger.debug(ctx, `operation=can_reassign work_id=${work.work_id} reassignment_count=${reassignmentCount} max=${MAX_REASSIGNMENTS} can_reassign=${canReassignResult}`);
+
+  return canReassignResult;
 }
 
 /**
  * Build reassignment criteria for a work item.
  *
+ * @param ctx - Request context for tracing
  * @param work - The work item
  * @returns Reassignment criteria
  */
-export function buildReassignmentCriteria(work: WorkItem): ReassignmentCriteria {
+export function buildReassignmentCriteria(
+  ctx: RequestContext,
+  work: WorkItem
+): ReassignmentCriteria {
   // Get all agent IDs that have failed for this work
   const excludedIds: string[] = [];
   for (const retry of work.retries) {
@@ -221,6 +277,8 @@ export function buildReassignmentCriteria(work: WorkItem): ReassignmentCriteria 
   if (work.agent?.agent_id) {
     excludedIds.push(work.agent.agent_id);
   }
+
+  logger.debug(ctx, `operation=build_reassignment_criteria work_id=${work.work_id} excluded_agent_count=${excludedIds.length}`);
 
   return {
     excluded_agent_ids: excludedIds,
@@ -238,6 +296,7 @@ export function buildReassignmentCriteria(work: WorkItem): ReassignmentCriteria 
  * Create a work item for a continuation action.
  * Uses DatabaseClient for all database operations.
  *
+ * @param ctx - Request context for tracing
  * @param db - DatabaseClient instance
  * @param job_id - The job ID
  * @param plan_id - The plan ID
@@ -246,6 +305,7 @@ export function buildReassignmentCriteria(work: WorkItem): ReassignmentCriteria 
  * @returns The created work item
  */
 export async function createContinuationWorkItem(
+  ctx: RequestContext,
   db: DatabaseClient,
   job_id: string,
   plan_id: string,
@@ -253,6 +313,8 @@ export async function createContinuationWorkItem(
   emitEvent: (event: WorkLifecycleEvent) => void
 ): Promise<WorkItem> {
   const work_id = `work_${Date.now()}_${action_item.id}`;
+
+  logger.info(ctx, `operation=create_continuation_work_item_start job_id=${job_id} plan_id=${plan_id} action_item_id=${action_item.id} action_type=${action_item.action_type}`);
 
   // Determine initial status based on action type
   let initialStatus: WorkItemStatus;
@@ -320,6 +382,8 @@ export async function createContinuationWorkItem(
     action_item_id: action_item.id,
   });
 
+  logger.info(ctx, `operation=create_continuation_work_item_complete work_id=${work_id} initial_status=${initialStatus}`);
+
   return workItem;
 }
 
@@ -331,6 +395,7 @@ export async function createContinuationWorkItem(
  * Check if modifying a work item requires cascading updates to dependents.
  * Uses DatabaseClient for all database operations.
  *
+ * @param ctx - Request context for tracing
  * @param db - DatabaseClient instance
  * @param job_id - The job ID
  * @param plan_id - The plan ID
@@ -339,21 +404,26 @@ export async function createContinuationWorkItem(
  * @returns Array of continuation action items for cascade
  */
 export async function checkDependencyCascade(
+  ctx: RequestContext,
   db: DatabaseClient,
   job_id: string,
   plan_id: string,
   modified_work_id: string,
   invokePlanningLLM: (input: CascadeDecisionInput) => Promise<CascadeAnalysisResult>
 ): Promise<ContinuationActionItem[]> {
+  logger.info(ctx, `operation=check_dependency_cascade_start job_id=${job_id} plan_id=${plan_id} modified_work_id=${modified_work_id}`);
+
   // Use DatabaseClient to get modified work item
   const modifiedWork = await db.getWorkItem(modified_work_id);
   if (!modifiedWork) {
+    logger.error(ctx, `operation=check_dependency_cascade modified_work_id=${modified_work_id} error=work_item_not_found`);
     throw new Error(`Work item not found: ${modified_work_id}`);
   }
 
   // Use DatabaseClient to get plan
   const plan = await db.getPlan(plan_id);
   if (!plan) {
+    logger.error(ctx, `operation=check_dependency_cascade plan_id=${plan_id} error=plan_not_found`);
     throw new Error(`Plan not found: ${plan_id}`);
   }
 
@@ -363,8 +433,11 @@ export async function checkDependencyCascade(
   );
 
   if (dependents.length === 0) {
+    logger.debug(ctx, `operation=check_dependency_cascade modified_work_id=${modified_work_id} dependent_count=0 cascade_needed=false`);
     return []; // No cascade needed
   }
+
+  logger.debug(ctx, `operation=check_dependency_cascade modified_work_id=${modified_work_id} dependent_count=${dependents.length}`);
 
   // Ask Planning Agent to decide if dependents need re-running
   const cascadeDecision = await invokePlanningLLM({
@@ -379,9 +452,12 @@ export async function checkDependencyCascade(
   });
 
   if (cascadeDecision.needs_cascade) {
+    logger.info(ctx, `operation=check_dependency_cascade_complete modified_work_id=${modified_work_id} cascade_needed=true items_to_rerun=${cascadeDecision.items_to_rerun.length}`);
+
     return cascadeDecision.items_to_rerun.map((id) => {
       const actionItem = plan.action_items.find((a) => a.id === id);
       if (!actionItem) {
+        logger.error(ctx, `operation=check_dependency_cascade action_item_id=${id} error=action_item_not_found`);
         throw new Error(`Action item not found: ${id}`);
       }
       return {
@@ -391,6 +467,8 @@ export async function checkDependencyCascade(
       };
     });
   }
+
+  logger.info(ctx, `operation=check_dependency_cascade_complete modified_work_id=${modified_work_id} cascade_needed=false`);
 
   return [];
 }

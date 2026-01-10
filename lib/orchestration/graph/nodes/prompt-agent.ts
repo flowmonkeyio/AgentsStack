@@ -11,7 +11,11 @@ import OpenAI from "openai";
 import { nanoid } from "nanoid";
 import type { LLMOperation, ActionItem, PromptTemplate, WorkItem } from "@/types";
 import { withTracing } from "@/lib/galileo";
+import type { RequestContext } from "@/lib/logging";
+import { createLogger } from "@/lib/logging";
 import type { OrchestrationState, ContextRef, RetryContext as TypesRetryContext } from "../types";
+
+const logger = createLogger("graph");
 
 // =============================================================================
 // OPENROUTER CLIENT
@@ -312,11 +316,16 @@ function formatPromptInput(input: PromptAgentInput): string {
  * Generates final prompt from template + context.
  * Note: This node expects current_work_items to have at least one work item
  * that needs prompt generation.
+ *
+ * @param ctx - Request context for logging
+ * @param state - Current graph state
+ * @returns Partial state update
  */
-async function promptAgentNodeImpl(state: OrchestrationState): Promise<Partial<OrchestrationState>> {
+async function promptAgentNodeImpl(ctx: RequestContext, state: OrchestrationState): Promise<Partial<OrchestrationState>> {
   // Get current work item that needs prompt generation
   const currentWork = state.current_work_items.find((w) => w.status === "pending");
   if (!currentWork || !state.plan) {
+    logger.warn(ctx, `operation=prompt_agent job_id=${state.job_id} result=fail reason=no_pending_work`);
     return {
       error: "No pending work item to generate prompt for",
       reasoning: "No pending work item in state",
@@ -324,11 +333,14 @@ async function promptAgentNodeImpl(state: OrchestrationState): Promise<Partial<O
     };
   }
 
+  logger.info(ctx, `operation=prompt_agent work_id=${currentWork.work_id} job_id=${state.job_id}`);
+
   // Find corresponding action item
   const actionItem = state.plan.action_items.find(
-    (a) => a.id === currentWork.action.id
+    (a) => a.id === currentWork.action_item_id
   );
   if (!actionItem) {
+    logger.warn(ctx, `operation=prompt_agent work_id=${currentWork.work_id} result=fail reason=action_item_not_found`);
     return {
       error: "Action item not found in plan",
       reasoning: "Could not find action item for work",
@@ -340,6 +352,8 @@ async function promptAgentNodeImpl(state: OrchestrationState): Promise<Partial<O
   const template = state.available_templates.find(
     (t) => t.template_id === actionItem.template_id
   ) ?? createDefaultTemplate(actionItem.template_id);
+
+  logger.debug(ctx, `operation=prompt_agent work_id=${currentWork.work_id} template_id=${template.template_id}`);
 
   // Build prompt input
   const promptInput: PromptAgentInput = {
@@ -356,6 +370,9 @@ async function promptAgentNodeImpl(state: OrchestrationState): Promise<Partial<O
 
   // Generate prompt via LLM
   const result = await invokePromptLLM(promptInput);
+
+  const tokens = (result.operation.native_tokens_prompt ?? 0) + (result.operation.native_tokens_completion ?? 0);
+  logger.info(ctx, `operation=prompt_agent work_id=${currentWork.work_id} template_id=${template.template_id} tokens=${tokens}`);
 
   // Build reasoning
   const reasoning = `Generated prompt using template ${template.template_id}`;
@@ -414,12 +431,12 @@ Please provide a revised output that addresses all issues above.`,
 }
 
 /**
- * Exported prompt agent node with tracing
+ * Exported prompt agent node (without tracing wrapper - tracing applied in graph.ts)
  */
-export const promptAgentNode = withTracing("prompt", promptAgentNodeImpl);
+export const promptAgentNode = promptAgentNodeImpl;
 
 /**
- * Re-export for direct use without tracing
+ * Re-export for direct use
  */
 export { promptAgentNodeImpl };
 

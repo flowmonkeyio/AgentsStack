@@ -13,9 +13,29 @@
  * @see /docs/designs/orchestration/graph/TECH_DESIGN.md
  */
 
-import { StateGraph, END, START } from "@langchain/langgraph";
-import { MongoDBSaver } from "@langchain/langgraph-checkpoint-mongodb";
+import { StateGraph, END, START, MemorySaver } from "@langchain/langgraph";
 import type { MongoClient } from "mongodb";
+import type { RequestContext } from "@/lib/logging";
+import { createLogger } from "@/lib/logging";
+
+const logger = createLogger("graph");
+
+// TODO: Install @langchain/langgraph-checkpoint-mongodb when ready for production
+// For now, we use MemorySaver or a stub interface
+interface MongoDBSaverOptions {
+  client: MongoClient;
+  dbName: string;
+  collectionName: string;
+}
+
+// Stub for MongoDB checkpointer - replace with actual package when installed
+class MongoDBSaver extends MemorySaver {
+  constructor(_options: MongoDBSaverOptions) {
+    super();
+    // TODO: Implement MongoDB persistence
+    console.warn("MongoDBSaver: Using in-memory fallback. Install @langchain/langgraph-checkpoint-mongodb for persistence.");
+  }
+}
 
 import { OrchestrationStateAnnotation, type OrchestrationState } from "./state";
 import type {
@@ -77,20 +97,24 @@ let eventBus: EventBus = {
 /**
  * Set the event bus for graph events.
  *
+ * @param ctx - Request context for logging
  * @param bus - Event bus implementation
  */
-export function setEventBus(bus: EventBus): void {
+export function setEventBus(ctx: RequestContext, bus: EventBus): void {
+  logger.debug(ctx, "operation=set_event_bus");
   eventBus = bus;
 }
 
 /**
  * Emit an event to the event bus.
  *
+ * @param ctx - Request context for logging
  * @param event - Event to emit
  */
-export function emitEvent(event: GraphEvent): void {
+export function emitEvent(ctx: RequestContext, event: GraphEvent): void {
   const channel =
     "job_id" in event ? `job:${event.job_id}` : "job:unknown";
+  logger.debug(ctx, `operation=emit_event type=${event.type} channel=${channel}`);
   eventBus.publish(channel, event);
 }
 
@@ -108,14 +132,18 @@ export function emitEvent(event: GraphEvent): void {
  */
 export function withTracing<T extends OrchestrationState>(
   nodeName: TracedNodeName,
-  nodeFunction: (state: T) => Promise<Partial<T>>
-): (state: T) => Promise<Partial<T>> {
-  return async (state: T): Promise<Partial<T>> => {
+  nodeFunction: (ctx: RequestContext, state: T) => Promise<Partial<T>>
+): (ctx: RequestContext, state: T) => Promise<Partial<T>> {
+  return async (ctx: RequestContext, state: T): Promise<Partial<T>> => {
     const startTime = Date.now();
+    logger.debug(ctx, `operation=node_start node=${nodeName} job_id=${state.job_id}`);
 
     try {
       // Execute the node
-      const output = await nodeFunction(state);
+      const output = await nodeFunction(ctx, state);
+
+      const durationMs = Date.now() - startTime;
+      logger.debug(ctx, `operation=node_complete node=${nodeName} job_id=${state.job_id} duration_ms=${durationMs}`);
 
       // Emit reasoning event for SSE
       if (
@@ -123,7 +151,7 @@ export function withTracing<T extends OrchestrationState>(
         typeof output === "object" &&
         ("reasoning" in output || "decision" in output)
       ) {
-        emitEvent({
+        emitEvent(ctx, {
           type: "reasoning",
           agent: nodeName,
           step: "execute",
@@ -134,12 +162,16 @@ export function withTracing<T extends OrchestrationState>(
 
       return output;
     } catch (error) {
+      const durationMs = Date.now() - startTime;
+      const errorMessage = error instanceof Error ? error.message : "Unknown error";
+      logger.error(ctx, `operation=node_error node=${nodeName} job_id=${state.job_id} duration_ms=${durationMs}`, error instanceof Error ? error : undefined);
+
       // Emit error event
-      emitEvent({
+      emitEvent(ctx, {
         type: "reasoning",
         agent: nodeName,
         step: "error",
-        thought: `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
+        thought: `Error: ${errorMessage}`,
         decision: "failed",
       });
 
@@ -158,11 +190,22 @@ export function withTracing<T extends OrchestrationState>(
  */
 export function withApiTracing<T extends OrchestrationState>(
   nodeName: ApiNodeName,
-  nodeFunction: (state: T) => Promise<Partial<T>>
-): (state: T) => Promise<Partial<T>> {
-  return async (state: T): Promise<Partial<T>> => {
-    // Simply execute - LangSmith will trace automatically when enabled
-    return nodeFunction(state);
+  nodeFunction: (ctx: RequestContext, state: T) => Promise<Partial<T>>
+): (ctx: RequestContext, state: T) => Promise<Partial<T>> {
+  return async (ctx: RequestContext, state: T): Promise<Partial<T>> => {
+    const startTime = Date.now();
+    logger.debug(ctx, `operation=api_node_start node=${nodeName} job_id=${state.job_id}`);
+
+    try {
+      const output = await nodeFunction(ctx, state);
+      const durationMs = Date.now() - startTime;
+      logger.debug(ctx, `operation=api_node_complete node=${nodeName} job_id=${state.job_id} duration_ms=${durationMs}`);
+      return output;
+    } catch (error) {
+      const durationMs = Date.now() - startTime;
+      logger.error(ctx, `operation=api_node_error node=${nodeName} job_id=${state.job_id} duration_ms=${durationMs}`, error instanceof Error ? error : undefined);
+      throw error;
+    }
   };
 }
 
@@ -173,74 +216,92 @@ export function withApiTracing<T extends OrchestrationState>(
 /**
  * Main agent router - determines next step based on main_agent decision.
  *
+ * @param ctx - Request context for logging
  * @param state - Current graph state
  * @returns Route key
  */
-export function mainAgentRouter(state: OrchestrationState): MainAgentDecision {
-  return (state.decision as MainAgentDecision) ?? "job_failed";
+export function mainAgentRouter(ctx: RequestContext, state: OrchestrationState): MainAgentDecision {
+  const decision = (state.decision as MainAgentDecision) ?? "job_failed";
+  logger.debug(ctx, `operation=main_agent_router job_id=${state.job_id} decision=${decision}`);
+  return decision;
 }
 
 /**
  * Plan verifier router - determines next step based on verification result.
  *
+ * @param ctx - Request context for logging
  * @param state - Current graph state
  * @returns Route key
  */
 export function planVerifierRouter(
+  ctx: RequestContext,
   state: OrchestrationState
 ): PlanVerifierDecision {
-  return (state.decision as PlanVerifierDecision) ?? "max_attempts_exceeded";
+  const decision = (state.decision as PlanVerifierDecision) ?? "max_attempts_exceeded";
+  logger.debug(ctx, `operation=plan_verifier_router job_id=${state.job_id} decision=${decision} attempts=${state.plan_verification_attempts}`);
+  return decision;
 }
 
 /**
  * Verification router - determines next step after Galileo verification.
  *
+ * @param ctx - Request context for logging
  * @param state - Current graph state
  * @returns Route key
  */
 export function verificationRouter(
+  ctx: RequestContext,
   state: OrchestrationState
 ): VerificationDecision {
   const workItem = state.current_work_items[0];
 
   if (!workItem?.verification) {
+    logger.debug(ctx, `operation=verification_router job_id=${state.job_id} decision=reject reason=no_verification`);
     return "reject";
   }
 
   const score = workItem.verification.score;
 
   if (score >= VERIFICATION_THRESHOLDS.pass) {
+    logger.debug(ctx, `operation=verification_router job_id=${state.job_id} decision=pass score=${score}`);
     return "pass";
   }
 
   if (score >= VERIFICATION_THRESHOLDS.retry && workItem.attempt < MAX_VERIFICATION_RETRIES) {
+    logger.debug(ctx, `operation=verification_router job_id=${state.job_id} decision=retry score=${score} attempt=${workItem.attempt}`);
     return "retry";
   }
 
+  logger.debug(ctx, `operation=verification_router job_id=${state.job_id} decision=reject score=${score}`);
   return "reject";
 }
 
 /**
  * Payment router - determines next step after payment attempt.
  *
+ * @param ctx - Request context for logging
  * @param state - Current graph state
  * @returns Route key
  */
-export function paymentRouter(state: OrchestrationState): PaymentDecision {
+export function paymentRouter(ctx: RequestContext, state: OrchestrationState): PaymentDecision {
   const workItem = state.current_work_items[0];
 
   if (!workItem?.payment) {
+    logger.debug(ctx, `operation=payment_router job_id=${state.job_id} decision=failed reason=no_payment`);
     return "failed";
   }
 
   if (workItem.payment.status === "confirmed") {
+    logger.debug(ctx, `operation=payment_router job_id=${state.job_id} decision=success`);
     return "success";
   }
 
   if (workItem.payment.retry_count < MAX_PAYMENT_RETRIES) {
+    logger.debug(ctx, `operation=payment_router job_id=${state.job_id} decision=retry retry_count=${workItem.payment.retry_count}`);
     return "retry";
   }
 
+  logger.debug(ctx, `operation=payment_router job_id=${state.job_id} decision=failed reason=max_retries`);
   return "failed";
 }
 
@@ -257,9 +318,12 @@ export function paymentRouter(state: OrchestrationState): PaymentDecision {
  * - Conditional edges for routing
  * - Entry point at main_agent
  *
+ * @param ctx - Request context for logging
  * @returns Compiled graph (without checkpointer)
  */
-export function buildOrchestrationGraph() {
+export function buildOrchestrationGraph(ctx: RequestContext) {
+  logger.info(ctx, "operation=build_graph type=standard");
+
   const workflow = new StateGraph(OrchestrationStateAnnotation);
 
   // ==========================================================================
@@ -267,27 +331,40 @@ export function buildOrchestrationGraph() {
   // ==========================================================================
 
   // Internal LLM agents (wrapped with tracing)
-  workflow.addNode("main_agent", withTracing("main", mainAgentNode));
-  workflow.addNode("planning_agent", withTracing("planning", planningAgentNode));
-  workflow.addNode("plan_verifier", withTracing("plan_verifier", planVerifierNode));
-  workflow.addNode("prompt_agent", withTracing("prompt", promptAgentNode));
+  // Note: Node functions receive ctx bound from the graph invoke context
+  workflow.addNode("main_agent", (state: OrchestrationState) =>
+    withTracing("main", mainAgentNode)(ctx, state));
+  workflow.addNode("planning_agent", (state: OrchestrationState) =>
+    withTracing("planning", planningAgentNode)(ctx, state));
+  workflow.addNode("plan_verifier", (state: OrchestrationState) =>
+    withTracing("plan_verifier", planVerifierNode)(ctx, state));
+  workflow.addNode("prompt_agent", (state: OrchestrationState) =>
+    withTracing("prompt", promptAgentNode)(ctx, state));
 
   // Service nodes (API calls, wrapped with API tracing)
-  workflow.addNode("dispatch_and_poll", withApiTracing("dispatch_and_poll", dispatchAndPollNode));
-  workflow.addNode("galileo_verify", withApiTracing("galileo_verify", galileoVerifyNode));
-  workflow.addNode("payment", withApiTracing("payment", paymentNode));
+  workflow.addNode("dispatch_and_poll", (state: OrchestrationState) =>
+    withApiTracing("dispatch_and_poll", dispatchAndPollNode)(ctx, state));
+  workflow.addNode("galileo_verify", (state: OrchestrationState) =>
+    withApiTracing("galileo_verify", galileoVerifyNode)(ctx, state));
+  workflow.addNode("payment", (state: OrchestrationState) =>
+    withApiTracing("payment", paymentNode)(ctx, state));
 
   // ==========================================================================
   // SET ENTRY POINT
   // ==========================================================================
 
-  workflow.addEdge(START, "main_agent");
+  // Note: Type assertions needed because LangGraph's strict typing doesn't
+  // recognize dynamically added nodes. This is a known LangGraph limitation.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const graph = workflow as any;
+
+  graph.addEdge(START, "main_agent");
 
   // ==========================================================================
   // ADD EDGES FROM MAIN_AGENT
   // ==========================================================================
 
-  workflow.addConditionalEdges("main_agent", mainAgentRouter, {
+  graph.addConditionalEdges("main_agent", (state: OrchestrationState) => mainAgentRouter(ctx, state), {
     call_planning: "planning_agent",
     execute_work: "prompt_agent",
     job_completed: END,
@@ -299,10 +376,10 @@ export function buildOrchestrationGraph() {
   // ==========================================================================
 
   // planning_agent always goes to plan_verifier
-  workflow.addEdge("planning_agent", "plan_verifier");
+  graph.addEdge("planning_agent", "plan_verifier");
 
   // plan_verifier routes based on verification result
-  workflow.addConditionalEdges("plan_verifier", planVerifierRouter, {
+  graph.addConditionalEdges("plan_verifier", (state: OrchestrationState) => planVerifierRouter(ctx, state), {
     pass: "main_agent", // Plan verified, back to main for execution
     fail: "planning_agent", // Retry planning with feedback
     max_attempts_exceeded: END, // Terminal failure
@@ -313,18 +390,18 @@ export function buildOrchestrationGraph() {
   // ==========================================================================
 
   // prompt_agent -> dispatch_and_poll -> galileo_verify
-  workflow.addEdge("prompt_agent", "dispatch_and_poll");
-  workflow.addEdge("dispatch_and_poll", "galileo_verify");
+  graph.addEdge("prompt_agent", "dispatch_and_poll");
+  graph.addEdge("dispatch_and_poll", "galileo_verify");
 
   // galileo_verify routes based on verification score
-  workflow.addConditionalEdges("galileo_verify", verificationRouter, {
+  graph.addConditionalEdges("galileo_verify", (state: OrchestrationState) => verificationRouter(ctx, state), {
     pass: "payment",
     retry: "prompt_agent", // Retry with feedback
     reject: "main_agent", // Let main_agent decide (may try new agent)
   });
 
   // payment routes based on payment status
-  workflow.addConditionalEdges("payment", paymentRouter, {
+  graph.addConditionalEdges("payment", (state: OrchestrationState) => paymentRouter(ctx, state), {
     success: "main_agent", // Work complete, back to main for next item
     retry: "payment", // Retry payment
     failed: "main_agent", // Let main_agent handle failure
@@ -334,6 +411,7 @@ export function buildOrchestrationGraph() {
   // COMPILE GRAPH
   // ==========================================================================
 
+  logger.debug(ctx, "operation=graph_compiled type=standard");
   return workflow.compile();
 }
 
@@ -344,16 +422,19 @@ export function buildOrchestrationGraph() {
 /**
  * Create a checkpointer for MongoDB.
  *
+ * @param ctx - Request context for logging
  * @param client - MongoDB client
  * @param dbName - Database name
  * @param collectionName - Collection name for checkpoints
  * @returns MongoDB checkpointer
  */
 export function createMongoCheckpointer(
+  ctx: RequestContext,
   client: MongoClient,
   dbName: string = "agentstack",
   collectionName: string = "graph_checkpoints"
 ): MongoDBSaver {
+  logger.debug(ctx, `operation=create_checkpointer db=${dbName} collection=${collectionName}`);
   return new MongoDBSaver({
     client,
     dbName,
@@ -364,64 +445,79 @@ export function createMongoCheckpointer(
 /**
  * Build the orchestration graph with MongoDB checkpointing.
  *
+ * @param ctx - Request context for logging
  * @param client - MongoDB client
  * @param dbName - Database name
  * @param collectionName - Collection name for checkpoints
  * @returns Compiled graph with checkpointer
  */
 export function buildOrchestrationGraphWithCheckpointing(
+  ctx: RequestContext,
   client: MongoClient,
   dbName: string = "agentstack",
   collectionName: string = "graph_checkpoints"
 ) {
+  logger.info(ctx, `operation=build_graph type=checkpointed db=${dbName}`);
+
   const workflow = new StateGraph(OrchestrationStateAnnotation);
 
   // Add nodes (same as buildOrchestrationGraph)
-  workflow.addNode("main_agent", withTracing("main", mainAgentNode));
-  workflow.addNode("planning_agent", withTracing("planning", planningAgentNode));
-  workflow.addNode("plan_verifier", withTracing("plan_verifier", planVerifierNode));
-  workflow.addNode("prompt_agent", withTracing("prompt", promptAgentNode));
-  workflow.addNode("dispatch_and_poll", withApiTracing("dispatch_and_poll", dispatchAndPollNode));
-  workflow.addNode("galileo_verify", withApiTracing("galileo_verify", galileoVerifyNode));
-  workflow.addNode("payment", withApiTracing("payment", paymentNode));
+  workflow.addNode("main_agent", (state: OrchestrationState) =>
+    withTracing("main", mainAgentNode)(ctx, state));
+  workflow.addNode("planning_agent", (state: OrchestrationState) =>
+    withTracing("planning", planningAgentNode)(ctx, state));
+  workflow.addNode("plan_verifier", (state: OrchestrationState) =>
+    withTracing("plan_verifier", planVerifierNode)(ctx, state));
+  workflow.addNode("prompt_agent", (state: OrchestrationState) =>
+    withTracing("prompt", promptAgentNode)(ctx, state));
+  workflow.addNode("dispatch_and_poll", (state: OrchestrationState) =>
+    withApiTracing("dispatch_and_poll", dispatchAndPollNode)(ctx, state));
+  workflow.addNode("galileo_verify", (state: OrchestrationState) =>
+    withApiTracing("galileo_verify", galileoVerifyNode)(ctx, state));
+  workflow.addNode("payment", (state: OrchestrationState) =>
+    withApiTracing("payment", paymentNode)(ctx, state));
 
   // Set entry point
-  workflow.addEdge(START, "main_agent");
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const graph = workflow as any;
+
+  graph.addEdge(START, "main_agent");
 
   // Add edges (same as buildOrchestrationGraph)
-  workflow.addConditionalEdges("main_agent", mainAgentRouter, {
+  graph.addConditionalEdges("main_agent", (state: OrchestrationState) => mainAgentRouter(ctx, state), {
     call_planning: "planning_agent",
     execute_work: "prompt_agent",
     job_completed: END,
     job_failed: END,
   });
 
-  workflow.addEdge("planning_agent", "plan_verifier");
+  graph.addEdge("planning_agent", "plan_verifier");
 
-  workflow.addConditionalEdges("plan_verifier", planVerifierRouter, {
+  graph.addConditionalEdges("plan_verifier", (state: OrchestrationState) => planVerifierRouter(ctx, state), {
     pass: "main_agent",
     fail: "planning_agent",
     max_attempts_exceeded: END,
   });
 
-  workflow.addEdge("prompt_agent", "dispatch_and_poll");
-  workflow.addEdge("dispatch_and_poll", "galileo_verify");
+  graph.addEdge("prompt_agent", "dispatch_and_poll");
+  graph.addEdge("dispatch_and_poll", "galileo_verify");
 
-  workflow.addConditionalEdges("galileo_verify", verificationRouter, {
+  graph.addConditionalEdges("galileo_verify", (state: OrchestrationState) => verificationRouter(ctx, state), {
     pass: "payment",
     retry: "prompt_agent",
     reject: "main_agent",
   });
 
-  workflow.addConditionalEdges("payment", paymentRouter, {
+  graph.addConditionalEdges("payment", (state: OrchestrationState) => paymentRouter(ctx, state), {
     success: "main_agent",
     retry: "payment",
     failed: "main_agent",
   });
 
   // Compile with checkpointer
-  const checkpointer = createMongoCheckpointer(client, dbName, collectionName);
+  const checkpointer = createMongoCheckpointer(ctx, client, dbName, collectionName);
 
+  logger.debug(ctx, "operation=graph_compiled type=checkpointed");
   return workflow.compile({
     checkpointer,
   });

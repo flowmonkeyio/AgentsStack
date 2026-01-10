@@ -12,7 +12,11 @@ import { nanoid } from "nanoid";
 import type { LLMOperation, ActionItem, Agent, PromptTemplate, Deliverable } from "@/types";
 import type { RerankResult } from "@/lib/orchestration/discovery";
 import { withTracing } from "@/lib/galileo";
+import type { RequestContext } from "@/lib/logging";
+import { createLogger } from "@/lib/logging";
 import type { OrchestrationState } from "../types";
+
+const logger = createLogger("graph");
 
 // =============================================================================
 // OPENROUTER CLIENT
@@ -430,8 +434,10 @@ export function selectBestAgent(
  * Creates plan, picks agents, picks templates.
  * On retry: receives feedback from failed verification.
  */
-async function planningAgentNodeImpl(state: OrchestrationState): Promise<Partial<OrchestrationState>> {
+async function planningAgentNodeImpl(ctx: RequestContext, state: OrchestrationState): Promise<Partial<OrchestrationState>> {
   const isRetry = state.plan_verification_attempts > 0;
+
+  logger.info(ctx, `operation=planning_agent job_id=${state.job_id} is_retry=${isRetry} budget=${state.budget}`);
 
   // Build input for planning LLM
   const planInput: PlanningAgentInput = {
@@ -461,10 +467,15 @@ async function planningAgentNodeImpl(state: OrchestrationState): Promise<Partial
     .filter((a) => a.resource_type !== "SELF")
     .reduce((sum, a) => sum + a.estimated_cost, 0);
 
+  const todosCount = result.data.action_items.length;
+  const tokens = (result.operation.native_tokens_prompt ?? 0) + (result.operation.native_tokens_completion ?? 0);
+
+  logger.info(ctx, `operation=planning_agent job_id=${state.job_id} todos_count=${todosCount} tokens=${tokens} estimated_cost=${totalEstimatedCost.toFixed(2)}`);
+
   // Build reasoning
   const reasoning = isRetry
     ? `Revised plan addressing: ${state.plan_verification_feedback?.join(", ")}`
-    : `Created plan with ${result.data.action_items.length} action items, estimated cost: $${totalEstimatedCost.toFixed(2)}`;
+    : `Created plan with ${todosCount} action items, estimated cost: $${totalEstimatedCost.toFixed(2)}`;
 
   return {
     plan: result.data,
@@ -476,14 +487,11 @@ async function planningAgentNodeImpl(state: OrchestrationState): Promise<Partial
 }
 
 /**
- * Exported planning agent node with tracing
+ * Exported planning agent node (without tracing wrapper - tracing applied in graph.ts)
  */
-export const planningAgentNode = withTracing(
-  "planning",
-  planningAgentNodeImpl
-);
+export const planningAgentNode = planningAgentNodeImpl;
 
 /**
- * Re-export for direct use without tracing
+ * Re-export for direct use
  */
 export { planningAgentNodeImpl };

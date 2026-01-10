@@ -8,6 +8,10 @@
  */
 
 import { Annotation, MessagesAnnotation } from "@langchain/langgraph";
+import type { RequestContext } from "@/lib/logging";
+import { createLogger } from "@/lib/logging";
+
+const logger = createLogger("graph");
 import type {
   LLMOperation,
   Agent,
@@ -164,6 +168,7 @@ export type OrchestrationState = typeof OrchestrationStateAnnotation.State;
 /**
  * Create initial state for a new job.
  *
+ * @param ctx - Request context for logging
  * @param job_id - Unique job identifier
  * @param user_id - User who owns this job
  * @param prompt - User's prompt
@@ -172,12 +177,14 @@ export type OrchestrationState = typeof OrchestrationStateAnnotation.State;
  * @returns Initial graph state
  */
 export function createInitialOrchestrationState(
+  ctx: RequestContext,
   job_id: string,
   user_id: string,
   prompt: string,
   budget: number,
   trace_id: string
 ): Partial<OrchestrationState> {
+  logger.info(ctx, `operation=create_initial_state job_id=${job_id} user_id=${user_id} budget=${budget}`);
   return {
     job_id,
     user_id,
@@ -208,6 +215,7 @@ export function createInitialOrchestrationState(
 /**
  * Create initial state for a continuation.
  *
+ * @param ctx - Request context for logging
  * @param job_id - Job ID being continued
  * @param user_id - User who owns this job
  * @param continuation_prompt - User's continuation prompt
@@ -218,6 +226,7 @@ export function createInitialOrchestrationState(
  * @returns Initial graph state for continuation
  */
 export function createContinuationState(
+  ctx: RequestContext,
   job_id: string,
   user_id: string,
   continuation_prompt: string,
@@ -226,6 +235,7 @@ export function createContinuationState(
   budget: number,
   trace_id: string
 ): Partial<OrchestrationState> {
+  logger.info(ctx, `operation=create_continuation_state job_id=${job_id} user_id=${user_id} budget=${budget} context_refs_count=${context_refs.length}`);
   return {
     job_id,
     user_id,
@@ -259,14 +269,17 @@ export function createContinuationState(
  * Note: For recovery, we typically load the full state from checkpoint.
  * This function creates a minimal state if needed.
  *
+ * @param ctx - Request context for logging
  * @param job_id - Job ID being recovered
  * @param trace_id - LangSmith trace ID
  * @returns Minimal state for recovery
  */
 export function createRecoveryState(
+  ctx: RequestContext,
   job_id: string,
   trace_id: string
 ): Partial<OrchestrationState> {
+  logger.info(ctx, `operation=create_recovery_state job_id=${job_id}`);
   return {
     job_id,
     trigger: "recover",

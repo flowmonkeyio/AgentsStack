@@ -26,6 +26,7 @@ export type {
 // Legacy interface for backward compatibility
 import type { Agent, AgentUsage } from '@/types';
 import { ExternalAgentClient } from '../external-agents/client';
+import { createContext } from '../logging';
 import type {
   AgentExecuteRequest,
 } from '../external-agents/types';
@@ -60,6 +61,7 @@ const client = new ExternalAgentClient();
  */
 export async function executeAgent(params: ExecutionParams): Promise<ExecutionResult> {
   const { agent, prompt, timeout } = params;
+  const ctx = createContext();
 
   try {
     const request: AgentExecuteRequest = {
@@ -67,7 +69,7 @@ export async function executeAgent(params: ExecutionParams): Promise<ExecutionRe
       prompt,
     };
 
-    const response = await client.execute(agent.url, request, { timeout });
+    const response = await client.execute(ctx, agent.url, request, { timeout });
 
     if (isExecuteResponseSync(response)) {
       return {
@@ -100,8 +102,10 @@ export async function executeAgent(params: ExecutionParams): Promise<ExecutionRe
  * @deprecated Use ExternalAgentClient.checkStatus() instead
  */
 export async function pollAgentStatus(status_url: string): Promise<ExecutionResult> {
+  const ctx = createContext();
+
   try {
-    const status = await client.checkStatus(status_url);
+    const status = await client.checkStatus(ctx, status_url);
 
     if (status.status === 'completed') {
       return {
