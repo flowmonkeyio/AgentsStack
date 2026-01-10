@@ -180,7 +180,7 @@ export async function dispatchToAgent(
     logger.info(ctx, `operation=dispatch work_id=${work_id} agent_id=${work.agent.agent_id} mode=sync`);
 
     // Transition to received state
-    await lifecycle.transition(work_id, "sync_response", {
+    await lifecycle.transition(ctx, work_id, "sync_response", {
       output: {
         title: getOutputTitle(response.output),
         description: getOutputDescription(response.output),
@@ -208,7 +208,7 @@ export async function dispatchToAgent(
 
     logger.info(ctx, `operation=dispatch work_id=${work_id} agent_id=${work.agent.agent_id} mode=async reference_id=${response.reference_id}`);
 
-    await lifecycle.transition(work_id, "async_response", {
+    await lifecycle.transition(ctx, work_id, "async_response", {
       reference_id: response.reference_id,
       status_url: response.status_url,
       callback_url: callbackUrl,
@@ -290,7 +290,7 @@ export async function pollAgent(
   // Check timeout
   if (new Date() > work.external_ref.polling.timeout_at) {
     logger.warn(ctx, `operation=poll_agent work_id=${work_id} status=timeout`);
-    await lifecycle.transition(work_id, "poll_timeout");
+    await lifecycle.transition(ctx, work_id, "poll_timeout");
     return { status: "failed", error: "Polling timeout" };
   }
 
@@ -316,7 +316,7 @@ export async function pollAgent(
   if (isStatusCompleted(response)) {
     logger.info(ctx, `operation=poll_agent work_id=${work_id} status=completed`);
 
-    await lifecycle.transition(work_id, "poll_completed", {
+    await lifecycle.transition(ctx, work_id, "poll_completed", {
       output: {
         title: getOutputTitle(response.output),
         description: getOutputDescription(response.output),
@@ -508,7 +508,7 @@ export async function handleAgentCallback(
   if (body.status === "completed" && body.output) {
     logger.info(ctx, `operation=webhook_completed work_id=${work_id} agent_id=${work.agent.agent_id}`);
 
-    await lifecycle.transition(work_id, "poll_completed", {
+    await lifecycle.transition(ctx, work_id, "poll_completed", {
       output: {
         title: body.output.title,
         description: body.output.description,

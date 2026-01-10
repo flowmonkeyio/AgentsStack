@@ -135,7 +135,7 @@ export async function payForWork(
   }
 
   // Transition to paying
-  await lifecycle.transition(work_id, "start_payment");
+  await lifecycle.transition(ctx, work_id, "start_payment");
 
   // Build payment request
   const paymentRequest = {
@@ -155,12 +155,12 @@ export async function payForWork(
   // Execute payment
   let paymentResponse: PaymentResult;
   try {
-    paymentResponse = await payments.pay(paymentRequest);
+    paymentResponse = await payments.pay(ctx, paymentRequest);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
     logger.error(ctx, `operation=pay_for_work work_id=${work_id} error=payment_exception`, error instanceof Error ? error : undefined);
     // Transition to failed state
-    await lifecycle.transition(work_id, "payment_failed");
+    await lifecycle.transition(ctx, work_id, "payment_failed");
     return {
       success: false,
       error: message,
@@ -170,7 +170,7 @@ export async function payForWork(
 
   if (paymentResponse.success) {
     // Transition to completed
-    await lifecycle.transition(work_id, "payment_confirmed", {
+    await lifecycle.transition(ctx, work_id, "payment_confirmed", {
       amount: paymentRequest.amount,
       tx_hash: paymentResponse.tx_hash!,
     });
@@ -191,10 +191,10 @@ export async function payForWork(
   logger.warn(ctx, `operation=pay_for_work work_id=${work_id} status=failed retry_suggested=${paymentResponse.retry_suggested}`);
 
   if (paymentResponse.retry_suggested) {
-    await lifecycle.transition(work_id, "payment_failed");
+    await lifecycle.transition(ctx, work_id, "payment_failed");
     // Will be retried by retry logic
   } else {
-    await lifecycle.transition(work_id, "max_payment_retries");
+    await lifecycle.transition(ctx, work_id, "max_payment_retries");
   }
 
   return paymentResponse;
@@ -237,7 +237,7 @@ export async function retryPayment(
   // Check if max retries exceeded
   if (retryCount >= MAX_PAYMENT_RETRIES) {
     logger.warn(ctx, `operation=retry_payment work_id=${work_id} status=max_retries_exceeded retry_count=${retryCount}`);
-    await lifecycle.transition(work_id, "max_payment_retries");
+    await lifecycle.transition(ctx, work_id, "max_payment_retries");
     return;
   }
 
@@ -247,7 +247,7 @@ export async function retryPayment(
   await sleep(backoffMs);
 
   // Transition back to paying state
-  await lifecycle.transition(work_id, "retry_payment");
+  await lifecycle.transition(ctx, work_id, "retry_payment");
 
   // Retry payment
   await payForWork(ctx, work_id, deps);
@@ -293,12 +293,12 @@ export async function checkPaymentStatus(
   }
 
   // Check on-chain status
-  const status = await payments.getPaymentStatus(work.payment.tx_hash);
+  const status = await payments.getPaymentStatus(ctx, work.payment.tx_hash);
 
   logger.info(ctx, `operation=check_payment_status work_id=${work_id} tx_hash=${work.payment.tx_hash} status=${status}`);
 
   if (status === "confirmed") {
-    await lifecycle.transition(work_id, "payment_confirmed", {
+    await lifecycle.transition(ctx, work_id, "payment_confirmed", {
       amount: work.payment.amount,
       tx_hash: work.payment.tx_hash,
     });
@@ -311,7 +311,7 @@ export async function checkPaymentStatus(
     });
   } else if (status === "failed") {
     logger.warn(ctx, `operation=check_payment_status work_id=${work_id} tx_hash=${work.payment.tx_hash} status=failed`);
-    await lifecycle.transition(work_id, "payment_failed");
+    await lifecycle.transition(ctx, work_id, "payment_failed");
   }
   // If pending, wait for next check (no action needed)
 }

@@ -2,47 +2,114 @@ import { SignIn } from "@clerk/nextjs";
 
 export default function SignInPage() {
   return (
-    <div className="min-h-[calc(100vh-64px)] flex items-center justify-center px-4 py-12 relative">
-      {/* Background decoration */}
-      <div className="absolute inset-0 overflow-hidden pointer-events-none">
-        <div className="absolute top-1/4 left-1/4 w-96 h-96 orb orb-primary opacity-15 animate-float" />
-        <div className="absolute bottom-1/4 right-1/4 w-64 h-64 orb orb-secondary opacity-10 animate-float delay-200" />
-      </div>
-
-      <div className="relative z-10 w-full max-w-md">
-        {/* Header */}
-        <div className="text-center mb-8">
-          <h1 className="font-heading text-3xl font-bold text-foreground mb-2">Welcome back</h1>
-          <p className="text-foreground-muted">Sign in to continue to AgentStack</p>
-        </div>
-
-        {/* Clerk SignIn component */}
-        <SignIn
-          appearance={{
-            elements: {
-              rootBox: "mx-auto w-full",
-              card: "bg-background-card border border-border shadow-2xl rounded-2xl",
-              headerTitle: "font-heading text-xl font-bold text-foreground",
-              headerSubtitle: "text-foreground-muted",
-              socialButtonsBlockButton: "bg-background border border-border hover:bg-background-card-hover text-foreground transition-colors",
-              socialButtonsBlockButtonText: "font-medium",
-              dividerLine: "bg-border",
-              dividerText: "text-foreground-subtle",
-              formFieldLabel: "text-foreground-muted text-sm font-medium",
-              formFieldInput: "input-field",
-              formButtonPrimary: "btn-primary w-full",
-              footerActionLink: "text-primary hover:text-primary-hover font-medium",
-              identityPreviewEditButton: "text-primary hover:text-primary-hover",
-              formFieldAction: "text-primary hover:text-primary-hover text-sm",
-              alertText: "text-destructive",
-              formFieldInputShowPasswordButton: "text-foreground-muted hover:text-foreground",
-            },
-            layout: {
-              socialButtonsPlacement: "bottom",
-              socialButtonsVariant: "blockButton",
-            },
+    <div className="min-h-screen flex items-center justify-center px-4 py-16 relative overflow-hidden bg-[#f8f9fb]">
+      {/* Premium background */}
+      <div className="absolute inset-0">
+        {/* Subtle grid pattern */}
+        <div
+          className="absolute inset-0 opacity-30"
+          style={{
+            backgroundImage: `
+              linear-gradient(rgba(13, 148, 136, 0.04) 1px, transparent 1px),
+              linear-gradient(90deg, rgba(13, 148, 136, 0.04) 1px, transparent 1px)
+            `,
+            backgroundSize: '40px 40px',
           }}
         />
+        {/* Gradient orbs - positioned for visual balance */}
+        <div className="absolute -top-24 left-1/4 w-[600px] h-[600px] rounded-full bg-gradient-to-br from-[#0d9488]/10 to-transparent blur-3xl" />
+        <div className="absolute -bottom-32 right-1/4 w-[500px] h-[500px] rounded-full bg-gradient-to-br from-[#6366f1]/8 to-transparent blur-3xl" />
+        <div className="absolute top-1/2 -right-24 w-[400px] h-[400px] rounded-full bg-gradient-to-br from-[#f59e0b]/6 to-transparent blur-3xl" />
+      </div>
+
+      <div className="relative z-10 w-full max-w-[400px] animate-fade-up">
+        {/* Logo & Header */}
+        <div className="text-center mb-10">
+          <div
+            className="w-16 h-16 rounded-2xl mx-auto mb-6 flex items-center justify-center"
+            style={{
+              background: 'linear-gradient(135deg, #1a1d23 0%, #2d3340 100%)',
+              boxShadow: '0 8px 32px -4px rgba(0, 0, 0, 0.25)',
+            }}
+          >
+            <svg className="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M13 10V3L4 14h7v7l9-11h-7z" />
+            </svg>
+          </div>
+          <h1 className="font-heading text-[28px] font-bold text-[#1a1d23] mb-3 tracking-tight">
+            Welcome back
+          </h1>
+          <p className="text-[#5c6370] text-[15px] leading-relaxed">
+            Sign in to continue to AgentStack
+          </p>
+        </div>
+
+        {/* Clerk SignIn */}
+        <div className="min-h-[380px]">
+          <SignIn
+            appearance={{
+              elements: {
+                rootBox: "mx-auto w-full",
+                card: "clerk-card-premium",
+                headerTitle: "font-heading text-xl font-bold text-[#1a1d23]",
+                headerSubtitle: "text-[#5c6370] text-sm",
+                socialButtonsBlockButton: "clerk-social-btn",
+                socialButtonsBlockButtonText: "font-medium text-[#1a1d23]",
+                socialButtonsBlockButtonArrow: "text-[#5c6370]",
+                dividerLine: "bg-[#e5e7eb]",
+                dividerText: "text-[#8b919e] text-sm",
+                formFieldLabel: "text-[#5c6370] text-sm font-medium mb-1.5",
+                formFieldInput: "clerk-input",
+                formButtonPrimary: "clerk-btn-primary",
+                footerAction: "",
+                footerActionText: "text-[#5c6370] text-sm",
+                footerActionLink: "text-[#0d9488] hover:text-[#0f766e] font-semibold ml-1",
+                identityPreviewEditButton: "text-[#0d9488] hover:text-[#0f766e]",
+                formFieldAction: "text-[#0d9488] hover:text-[#0f766e] text-sm font-medium",
+                alertText: "text-[#dc2626]",
+                formFieldInputShowPasswordButton: "text-[#5c6370] hover:text-[#1a1d23]",
+                formFieldInputShowPasswordIcon: "w-4 h-4",
+                internal: "hidden",
+                footer: "clerk-footer",
+              },
+              layout: {
+                socialButtonsPlacement: "bottom",
+                socialButtonsVariant: "blockButton",
+                showOptionalFields: false,
+              },
+            }}
+          />
+        </div>
+
+        {/* Trust indicators */}
+        <div className="mt-10 pt-6 border-t border-[#e5e7eb]/60">
+          <div className="flex items-center justify-center gap-8">
+            <div className="flex items-center gap-2 text-[#8b919e]">
+              <div className="w-8 h-8 rounded-lg bg-[#f0f2f5] flex items-center justify-center">
+                <svg className="w-4 h-4 text-[#5c6370]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                </svg>
+              </div>
+              <span className="text-xs font-medium">Secure</span>
+            </div>
+            <div className="flex items-center gap-2 text-[#8b919e]">
+              <div className="w-8 h-8 rounded-lg bg-[#f0f2f5] flex items-center justify-center">
+                <svg className="w-4 h-4 text-[#5c6370]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+                </svg>
+              </div>
+              <span className="text-xs font-medium">Encrypted</span>
+            </div>
+            <div className="flex items-center gap-2 text-[#8b919e]">
+              <div className="w-8 h-8 rounded-lg bg-[#f0f2f5] flex items-center justify-center">
+                <svg className="w-4 h-4 text-[#5c6370]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                </svg>
+              </div>
+              <span className="text-xs font-medium">Fast</span>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   );
