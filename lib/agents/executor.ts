@@ -1,13 +1,35 @@
 /**
- * Agent Executor Module
+ * Agent Executor (Legacy)
  *
- * Handles execution of external agents with x402 payment protocol.
+ * This file is maintained for backward compatibility.
+ * All functionality has been moved to lib/external-agents/.
  *
- * @see /docs/MODULE_EXTERNAL_AGENTS.md
- * @see /docs/designs/core-data-structure/TECH_DESIGN.md
+ * @deprecated Use lib/external-agents instead
+ * @see /docs/designs/external-agents/TECH_DESIGN.md
  */
 
-import type { Agent, AgentUsage } from "@/types";
+// Re-export client as legacy API
+export {
+  ExternalAgentClient,
+  ExternalAgentError,
+  createExternalAgentClient,
+} from '../external-agents/client';
+
+export type {
+  AgentExecuteRequest,
+  AgentExecuteResponse,
+  AgentExecuteResponseSync,
+  AgentExecuteResponseAsync,
+  AgentStatusResponse,
+} from '../external-agents/types';
+
+// Legacy interface for backward compatibility
+import type { Agent, AgentUsage } from '@/types';
+import { ExternalAgentClient } from '../external-agents/client';
+import type {
+  AgentExecuteRequest,
+} from '../external-agents/types';
+import { isExecuteResponseSync } from '../external-agents/types';
 
 export interface ExecutionParams {
   agent: Agent;
@@ -15,10 +37,6 @@ export interface ExecutionParams {
   timeout?: number;
 }
 
-/**
- * Output from agent execution.
- * Matches WorkItem.output schema.
- */
 export interface AgentOutput {
   title: string;
   description: string;
@@ -29,144 +47,90 @@ export interface ExecutionResult {
   success: boolean;
   output?: AgentOutput;
   usage?: AgentUsage;
-  reference_id?: string; // For async agents
-  status_url?: string; // For polling
+  reference_id?: string;
+  status_url?: string;
   error?: string;
 }
 
+const client = new ExternalAgentClient();
+
 /**
- * Execute an external agent synchronously.
- *
- * @param params - Execution parameters
- * @returns Execution result with output and usage
+ * Execute an external agent.
+ * @deprecated Use ExternalAgentClient.execute() instead
  */
 export async function executeAgent(params: ExecutionParams): Promise<ExecutionResult> {
-  const { agent, prompt, timeout = 60000 } = params;
-
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeout);
+  const { agent, prompt, timeout } = params;
 
   try {
-    const response = await fetch(agent.url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        // x402 payment headers will be added by payment integration
-      },
-      body: JSON.stringify({ prompt }),
-      signal: controller.signal,
-    });
+    const request: AgentExecuteRequest = {
+      request_id: crypto.randomUUID(),
+      prompt,
+    };
 
-    clearTimeout(timeoutId);
+    const response = await client.execute(agent.url, request, { timeout });
 
-    if (!response.ok) {
-      return {
-        success: false,
-        error: `Agent returned status ${response.status}: ${await response.text()}`,
-      };
-    }
-
-    const data = await response.json();
-
-    // Check for async response (202 Accepted)
-    if (response.status === 202) {
+    if (isExecuteResponseSync(response)) {
       return {
         success: true,
-        reference_id: data.reference_id,
-        status_url: data.status_url,
+        output: {
+          title: 'Agent Output',
+          description: '',
+          content: response.output,
+        },
+        usage: response.usage,
       };
     }
 
+    // Async response
     return {
       success: true,
-      output: {
-        title: data.title ?? "Agent Output",
-        description: data.description ?? "",
-        content: data.output ?? data.content ?? data,
-      },
-      usage: data.usage
-        ? {
-            total_cost: data.usage.total_cost,
-            model_usage: data.usage.model_usage,
-          }
-        : undefined,
+      reference_id: response.reference_id,
+      status_url: response.status_url,
     };
   } catch (error) {
-    clearTimeout(timeoutId);
-
-    if (error instanceof Error && error.name === "AbortError") {
-      return {
-        success: false,
-        error: `Execution timed out after ${timeout}ms`,
-      };
-    }
-
     return {
       success: false,
-      error: error instanceof Error ? error.message : "Unknown execution error",
+      error: error instanceof Error ? error.message : 'Unknown error',
     };
   }
 }
 
 /**
  * Poll an async agent for status.
- *
- * @param status_url - URL to poll for status
- * @returns Execution result (may still be pending)
+ * @deprecated Use ExternalAgentClient.checkStatus() instead
  */
 export async function pollAgentStatus(status_url: string): Promise<ExecutionResult> {
   try {
-    const response = await fetch(status_url, {
-      method: "GET",
-      headers: {
-        "Content-Type": "application/json",
-      },
-    });
+    const status = await client.checkStatus(status_url);
 
-    if (!response.ok) {
-      return {
-        success: false,
-        error: `Status poll returned ${response.status}: ${await response.text()}`,
-      };
-    }
-
-    const data = await response.json();
-
-    // Still processing
-    if (data.status === "pending" || data.status === "processing") {
-      return {
-        success: false,
-        error: "still_processing",
-      };
-    }
-
-    // Completed
-    if (data.status === "completed") {
+    if (status.status === 'completed') {
       return {
         success: true,
         output: {
-          title: data.title ?? "Agent Output",
-          description: data.description ?? "",
-          content: data.output ?? data.content ?? data,
+          title: 'Agent Output',
+          description: '',
+          content: status.output,
         },
-        usage: data.usage
-          ? {
-              total_cost: data.usage.total_cost,
-              model_usage: data.usage.model_usage,
-            }
-          : undefined,
+        usage: status.usage,
       };
     }
 
-    // Failed
+    if (status.status === 'failed') {
+      return {
+        success: false,
+        error: status.error,
+      };
+    }
+
+    // Still processing
     return {
       success: false,
-      error: data.error ?? "Agent execution failed",
+      error: 'still_processing',
     };
   } catch (error) {
     return {
       success: false,
-      error: error instanceof Error ? error.message : "Unknown poll error",
+      error: error instanceof Error ? error.message : 'Unknown error',
     };
   }
 }

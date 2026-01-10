@@ -355,6 +355,39 @@ export class DatabaseClientImpl implements DatabaseClient {
     const collection = await getTransactionsCollection();
     return collection.find({ job_id }).toArray();
   }
+
+  // =========================================================================
+  // Payment-specific methods (added for Payments module)
+  // =========================================================================
+
+  async updateWorkItemPayment(
+    work_id: string,
+    payment: Partial<NonNullable<WorkItem["payment"]>>
+  ): Promise<void> {
+    const collection = await getWorkItemsCollection();
+    const updateFields: Record<string, unknown> = {};
+
+    for (const [key, value] of Object.entries(payment)) {
+      if (value !== undefined) {
+        updateFields[`payment.${key}`] = value;
+      }
+    }
+
+    await collection.updateOne({ work_id }, { $set: updateFields });
+  }
+
+  async updateTransactionTxHash(tx_id: string, tx_hash: string): Promise<void> {
+    const collection = await getTransactionsCollection();
+    await collection.updateOne(
+      { tx_id },
+      {
+        $set: {
+          tx_hash,
+          confirmed_at: new Date(),
+        },
+      }
+    );
+  }
 }
 
 /**

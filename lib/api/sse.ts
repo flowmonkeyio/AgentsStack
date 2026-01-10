@@ -1,16 +1,37 @@
 /**
  * Server-Sent Events (SSE) utilities for real-time updates
+ *
+ * Updated to match the API design specification event types.
+ * @see /docs/designs/api/TECH_DESIGN.md
  */
 
+/**
+ * SSE Event Types matching the API design specification
+ */
 export type SSEEventType =
-  | "status"
-  | "plan"
-  | "work_item"
-  | "agent"
-  | "verification"
-  | "payment"
-  | "error"
-  | "complete";
+  // Job lifecycle
+  | "job:started"
+  | "job:planning"
+  | "job:plan_verified"
+  | "job:executing"
+  | "job:completed"
+  | "job:failed"
+  | "job:continued"
+  // Work item lifecycle
+  | "work:created"
+  | "work:status_changed"
+  | "work:prompt_generated"
+  | "work:output_received"
+  | "work:verified"
+  | "work:retry"
+  | "work:payment_confirmed"
+  | "work:failed"
+  // Dynamic spawning
+  | "todo:spawned"
+  // Reasoning (for UI display)
+  | "reasoning"
+  // Connection management
+  | "heartbeat";
 
 export interface SSEEvent {
   type: SSEEventType;
@@ -23,7 +44,7 @@ export function createSSEEncoder(): TextEncoder {
 }
 
 export function formatSSEMessage(event: SSEEvent): string {
-  const data = JSON.stringify(event);
+  const data = JSON.stringify(event.data);
   return `event: ${event.type}\ndata: ${data}\n\n`;
 }
 

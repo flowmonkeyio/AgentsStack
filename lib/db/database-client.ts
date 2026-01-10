@@ -211,4 +211,23 @@ export interface DatabaseClient {
    * Get all transactions for a specific job
    */
   getTransactionsByJob(job_id: string): Promise<Transaction[]>;
+
+  // =========================================================================
+  // Payment-specific methods (added for Payments module)
+  // =========================================================================
+
+  /**
+   * Update work item payment fields.
+   * Supports partial updates - only provided fields are updated.
+   */
+  updateWorkItemPayment(
+    work_id: string,
+    payment: Partial<NonNullable<WorkItem["payment"]>>
+  ): Promise<void>;
+
+  /**
+   * Update transaction tx_hash after blockchain confirmation.
+   * Separate from updateTransactionStatus for atomic updates.
+   */
+  updateTransactionTxHash(tx_id: string, tx_hash: string): Promise<void>;
 }

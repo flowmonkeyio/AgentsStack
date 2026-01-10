@@ -37,3 +37,6 @@ export type { Transaction } from "./data";
 
 // LLM config types (MODEL_CONFIG, AgentRole, etc.)
 export * from "./llm";
+
+// API request/response types
+export * from "./api";
