@@ -104,6 +104,9 @@ export interface AgentStatusResponseProcessing {
 
   /** Optional status message */
   message?: string;
+
+  /** Estimated remaining time in milliseconds */
+  estimated_remaining_ms?: number;
 }
 
 /**
