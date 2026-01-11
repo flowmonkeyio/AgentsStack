@@ -32,10 +32,19 @@ export function createStatusHandler(taskManager: TaskManager) {
       let response: AgentStatusResponse;
 
       if (task.status === 'processing' || task.status === 'pending') {
+        // Calculate estimated remaining time based on progress and elapsed time
+        let estimated_remaining_ms: number | undefined;
+        if (task.started_at && task.progress > 0 && task.progress < 1) {
+          const elapsedMs = Date.now() - new Date(task.started_at).getTime();
+          const estimatedTotalMs = elapsedMs / task.progress;
+          estimated_remaining_ms = Math.round(estimatedTotalMs - elapsedMs);
+        }
+
         response = {
           status: 'processing',
           progress: task.progress,
           message: task.message,
+          estimated_remaining_ms,
         };
       } else if (task.status === 'completed') {
         response = {
