@@ -200,6 +200,75 @@ services:
       retries: 3
       start_period: 10s
 
+  # ==========================================================================
+  # Video Generation Agent (Sora 2)
+  # ==========================================================================
+  video-gen-agent:
+    build:
+      context: ./external_agents/video-gen-agent
+      dockerfile: Dockerfile
+
+    container_name: agentstack-video-gen-mcp
+
+    ports:
+      - "3002:3000"  # External agent HTTP
+
+    environment:
+      # Node Environment
+      NODE_ENV: production
+      PORT: 3000
+      HOST: 0.0.0.0
+
+      # OpenAI Sora API (REQUIRED)
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      OPENAI_VIDEO_MODEL: sora-2
+      MAX_VIDEO_DURATION: 12  # Sora 2 allows 4, 8, or 12 seconds
+
+      # Task Storage (shared Redis)
+      TASK_STORE_TYPE: redis
+      REDIS_URL: redis://redis:6379
+      REDIS_DB: 2  # Different DB than platform and image-gen
+      TASK_TTL_SECONDS: 3600
+
+      # Timeouts
+      VIDEO_GENERATION_TIMEOUT: 600000
+      HTTP_REQUEST_TIMEOUT: 60000
+      MAX_CONCURRENT_TASKS: 5
+
+      # Callbacks
+      CALLBACK_TIMEOUT: 10000
+      CALLBACK_RETRY_ATTEMPTS: 3
+      CALLBACK_RETRY_DELAY: 1000
+
+      # Logging
+      LOG_LEVEL: info
+      LOG_FORMAT: json
+
+      # Cost
+      DEFAULT_VIDEO_COST: 0.50
+      COST_PER_SECOND: 0.10
+
+      # Agent Registration
+      AGENT_WALLET_ADDRESS: "0x0000000000000000000000000000000000000002"
+      AGENT_BASE_PRICE: 0.50
+      AGENT_CAPABILITIES: "short videos, promotional content, social media clips, product demos"
+
+    depends_on:
+      redis:
+        condition: service_healthy
+
+    restart: unless-stopped
+
+    networks:
+      - agentstack-network
+
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000/health', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+
 networks:
   agentstack-network:
     driver: bridge
