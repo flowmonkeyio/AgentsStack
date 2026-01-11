@@ -14,9 +14,7 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        - MONGODB_URI=${MONGODB_URI}
-        - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
-        - VOYAGE_API_KEY=${VOYAGE_API_KEY}
+        # Only pass build-time variables (NEXT_PUBLIC_* vars that get embedded in client bundles)
         - NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY}
         - CLERK_SECRET_KEY=${CLERK_SECRET_KEY}
 
@@ -53,7 +51,7 @@ services:
       CLERK_SECRET_KEY: ${CLERK_SECRET_KEY}
 
       # App
-      NODE_ENV: ${NODE_ENV:-development}
+      NODE_ENV: production
       NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-http://localhost:3000}
 
     depends_on:

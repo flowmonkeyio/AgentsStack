@@ -20,10 +20,7 @@ RUN \
 FROM node:20-alpine AS builder
 WORKDIR /app
 
-# Accept build arguments from docker-compose
-ARG MONGODB_URI
-ARG OPENROUTER_API_KEY
-ARG VOYAGE_API_KEY
+# Accept build arguments from docker-compose (only for build-time needs)
 ARG NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
 ARG CLERK_SECRET_KEY
 
@@ -35,12 +32,14 @@ COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV NODE_ENV=production
 
-# Pass build args as ENV for Next.js build
-ENV MONGODB_URI=$MONGODB_URI
-ENV OPENROUTER_API_KEY=$OPENROUTER_API_KEY
-ENV VOYAGE_API_KEY=$VOYAGE_API_KEY
+# Pass build args as ENV for Next.js build (only NEXT_PUBLIC_ vars needed at build time)
 ENV NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=$NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
 ENV CLERK_SECRET_KEY=$CLERK_SECRET_KEY
+
+# Provide placeholder for build-time validation (will be overridden at runtime)
+ENV MONGODB_URI="mongodb://placeholder:27017/agentstack"
+ENV OPENROUTER_API_KEY="placeholder"
+ENV VOYAGE_API_KEY="placeholder"
 
 # Build the Next.js application
 RUN npm run build
